@@ -1229,7 +1229,7 @@ impl Composer {
         module_decoration: &str,
         owned_types: &HashSet<String>,
     ) -> Result<(), ComposerErrorInner> {
-        // TODO: remove this once glsl has INCLUDE_UNUSED_ITEMS
+        // TODO: remove this once glsl front support is complete
         if lang == ShaderLanguage::Glsl {
             return Ok(());
         }
@@ -1244,7 +1244,10 @@ impl Composer {
                     },
                     &format!("{}\n{}", header, "void main() {}"),
                 )
-                .unwrap(),
+                .map_err(|e| {
+                    println!("full err'd source file: \n---\n{}\n---", header);
+                    ComposerErrorInner::GlslParseError(e)
+                })?,
         };
 
         let recompiled_types: HashMap<_, _> = recompiled
