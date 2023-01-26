@@ -715,7 +715,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/glsl_const_import.txt"));
+        output_eq!(wgsl, "tests/expected/glsl_const_import.txt");
     }
 
     #[test]
@@ -755,10 +755,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(
-            wgsl,
-            include_str!("tests/expected/glsl_wgsl_const_import.txt")
-        );
+        output_eq!(wgsl, "tests/expected/glsl_wgsl_const_import.txt");
     }
     #[test]
     fn wgsl_glsl_const_import() {
@@ -797,10 +794,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(
-            wgsl,
-            include_str!("tests/expected/wgsl_glsl_const_import.txt")
-        );
+        output_eq!(wgsl, "tests/expected/wgsl_glsl_const_import.txt");
     }
 
     #[test]

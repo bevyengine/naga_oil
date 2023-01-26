@@ -1245,7 +1245,7 @@ impl Composer {
                     &format!("{}\n{}", header, "void main() {}"),
                 )
                 .map_err(|e| {
-                    println!("full err'd source file: \n---\n{}\n---", header);
+                    debug!("full err'd source file: \n---\n{header}\n---");
                     ComposerErrorInner::GlslParseError(e)
                 })?,
         };
