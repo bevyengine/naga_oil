@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod test {
     #[allow(unused_imports)]
     use std::io::Write;
@@ -14,6 +15,15 @@ mod test {
         ComposableModuleDescriptor, Composer, ComposerErrorInner, ImportDefWithOffset,
         ImportDefinition, NagaModuleDescriptor, ShaderDefValue, ShaderLanguage, ShaderType,
     };
+
+    macro_rules! output_eq {
+        ($result:ident, $path:expr) => {
+            assert_eq!(
+                $result.replace("\r", ""),
+                include_str!($path).replace("\r", "")
+            )
+        };
+    }
 
     #[test]
     fn simple_compose() {
@@ -52,7 +62,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/simple_compose.txt"));
+        output_eq!(wgsl, "tests/expected/simple_compose.txt");
     }
 
     #[test]
@@ -68,7 +78,7 @@ mod test {
             .unwrap();
 
         let defs = (1..=67)
-            .map(|i| (format!("a{}", i), ShaderDefValue::Bool(true)))
+            .map(|i| (format!("a{i}"), ShaderDefValue::Bool(true)))
             .collect::<HashMap<_, _>>();
 
         let module = composer
@@ -98,7 +108,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/big_shaderdefs.txt"));
+        output_eq!(wgsl, "tests/expected/big_shaderdefs.txt");
     }
 
     #[test]
@@ -152,7 +162,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/dup_import.txt"));
+        output_eq!(wgsl, "tests/expected/dup_import.txt");
     }
 
     #[test]
@@ -175,7 +185,7 @@ mod test {
             // f.write_all(text.as_bytes()).unwrap();
             // drop(f);
 
-            assert_eq!(text, include_str!("tests/expected/err_validation_1.txt"));
+            output_eq!(text, "tests/expected/err_validation_1.txt");
         }
 
         {
@@ -203,7 +213,7 @@ mod test {
             // f.write_all(text.as_bytes()).unwrap();
             // drop(f);
 
-            assert_eq!(text, include_str!("tests/expected/err_validation_2.txt"));
+            output_eq!(text, "tests/expected/err_validation_2.txt");
         }
     }
 
@@ -227,7 +237,7 @@ mod test {
             // f.write_all(text.as_bytes()).unwrap();
             // drop(f);
 
-            assert_eq!(text, include_str!("tests/expected/err_parse.txt"));
+            output_eq!(text, "tests/expected/err_parse.txt");
         }
 
         {
@@ -248,7 +258,7 @@ mod test {
                 .err()
                 .unwrap();
             let text2 = error_2.emit_to_string(&composer);
-            assert_eq!(text2, include_str!("tests/expected/err_parse.txt"));
+            output_eq!(text2, "tests/expected/err_parse.txt");
         }
     }
 
@@ -268,7 +278,7 @@ mod test {
         // let mut f = std::fs::File::create("missing_import.txt").unwrap();
         // f.write_all(text.as_bytes()).unwrap();
         // drop(f);
-        assert_eq!(text, include_str!("tests/expected/missing_import.txt"));
+        output_eq!(text, "tests/expected/missing_import.txt");
     }
 
     #[test]
@@ -287,7 +297,7 @@ mod test {
         // let mut f = std::fs::File::create("missing_import.txt").unwrap();
         // f.write_all(text.as_bytes()).unwrap();
         // drop(f);
-        assert_eq!(text, include_str!("tests/expected/missing_import.txt"));
+        output_eq!(text, "tests/expected/missing_import.txt");
     }
 
     #[test]
@@ -378,7 +388,7 @@ mod test {
         // let mut f = std::fs::File::create("glsl_call_wgsl.txt").unwrap();
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
-        assert_eq!(wgsl, include_str!("tests/expected/glsl_call_wgsl.txt"));
+        output_eq!(wgsl, "tests/expected/glsl_call_wgsl.txt");
     }
 
     #[test]
@@ -431,10 +441,7 @@ mod test {
         // let mut f = std::fs::File::create("wgsl_call_entrypoint.txt").unwrap();
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
-        assert_eq!(
-            wgsl,
-            include_str!("tests/expected/wgsl_call_entrypoint.txt")
-        );
+        output_eq!(wgsl, "tests/expected/wgsl_call_entrypoint.txt");
     }
 
     #[test]
@@ -471,7 +478,7 @@ mod test {
         .unwrap();
 
         // todo test properly - the redirect returns the functions in random order so can't rely on string repr
-        println!("{}", wgsl);
+        println!("{wgsl}");
     }
 
     #[test]
@@ -554,7 +561,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/additional_import.txt"));
+        output_eq!(wgsl, "tests/expected/additional_import.txt");
 
         // test as module
         composer
@@ -571,6 +578,55 @@ mod test {
             .unwrap();
 
         assert_eq!(test_shader(&mut composer), 2.0);
+    }
+
+    #[test]
+    fn invalid_override() {
+        let mut composer = Composer::default();
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/overrides/mod.wgsl"),
+                file_path: "tests/overrides/mod.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let module = composer.make_naga_module(NagaModuleDescriptor {
+            source: include_str!("tests/overrides/top_invalid.wgsl"),
+            file_path: "tests/overrides/top_invalid.wgsl",
+            ..Default::default()
+        });
+
+        #[cfg(feature = "override_any")]
+        {
+            let module = module.unwrap();
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::default(),
+            )
+            .validate(&module)
+            .unwrap();
+            let wgsl = naga::back::wgsl::write_string(
+                &module,
+                &info,
+                naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+            )
+            .unwrap();
+
+            // todo test properly - the redirect returns the functions in random order so can't rely on string repr
+            println!("{}", wgsl);
+        }
+
+        #[cfg(not(feature = "override_any"))]
+        {
+            let err = module.err().unwrap();
+            let err = err.emit_to_string(&composer);
+            // let mut f = std::fs::File::create("invalid_override_base.txt").unwrap();
+            // f.write_all(err.as_bytes()).unwrap();
+            // drop(f);
+            output_eq!(err, "tests/expected/invalid_override_base.txt");
+        }
     }
 
     #[test]
@@ -618,7 +674,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/import_in_decl.txt"));
+        output_eq!(wgsl, "tests/expected/import_in_decl.txt");
     }
 
     #[test]
@@ -789,7 +845,131 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/item_import_test.txt"));
+        output_eq!(wgsl, "tests/expected/item_import_test.txt");
+    }
+
+    #[test]
+    fn bad_identifiers() {
+        let mut composer = Composer::default();
+
+        let check_err = |composer: &mut Composer, name: &str| -> bool {
+            let result = composer.make_naga_module(NagaModuleDescriptor {
+                source: &format!("#import {name}"),
+                file_path: name,
+                ..Default::default()
+            });
+
+            if let Err(err) = &result {
+                if let ComposerErrorInner::InvalidIdentifier { original, .. } = &err.inner {
+                    return original.ends_with("bad_");
+                }
+            }
+
+            println!("{result:?}");
+            false
+        };
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/invalid_identifiers/const.wgsl"),
+                file_path: "tests/invalid_identifiers/const.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(check_err(&mut composer, "consts"));
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/invalid_identifiers/fn.wgsl"),
+                file_path: "tests/invalid_identifiers/fn.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(check_err(&mut composer, "fns"));
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/invalid_identifiers/global.wgsl"),
+                file_path: "tests/invalid_identifiers/global.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(check_err(&mut composer, "globals"));
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/invalid_identifiers/struct_member.wgsl"),
+                file_path: "tests/invalid_identifiers/struct_member.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(check_err(&mut composer, "struct_members"));
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/invalid_identifiers/struct.wgsl"),
+                file_path: "tests/invalid_identifiers/struct.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(check_err(&mut composer, "structs"));
+    }
+
+    #[test]
+    fn dup_struct_import() {
+        let mut composer = Composer::default();
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/dup_struct_import/struct.wgsl"),
+                file_path: "tests/dup_struct_import/struct.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/dup_struct_import/a.wgsl"),
+                file_path: "tests/dup_struct_import/a.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/dup_struct_import/b.wgsl"),
+                file_path: "tests/dup_struct_import/b.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let module = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/dup_struct_import/top.wgsl"),
+                file_path: "tests/dup_struct_import/top.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        // println!("{}", module.emit_to_string(&composer));
+        // assert!(false);
+
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .unwrap();
+        let wgsl = naga::back::wgsl::write_string(
+            &module,
+            &info,
+            naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+        )
+        .unwrap();
+
+        // let mut f = std::fs::File::create("dup_struct_import.txt").unwrap();
+        // f.write_all(wgsl.as_bytes()).unwrap();
+        // drop(f);
+
+        output_eq!(wgsl, "tests/expected/dup_struct_import.txt");
     }
 
     // actually run a shader and extract the result
@@ -803,7 +983,7 @@ mod test {
             })
             .unwrap();
 
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let adapter = instance
             .enumerate_adapters(wgpu::Backends::all())
             .next()
@@ -886,9 +1066,8 @@ mod test {
         }
 
         let view: &[u8] = &output_buffer.slice(..).get_mapped_range();
-        let res = f32::from_le_bytes(view.try_into().unwrap());
 
-        res
+        f32::from_le_bytes(view.try_into().unwrap())
     }
 
     //preprocessor tests
@@ -938,7 +1117,7 @@ fn vertex(
             operator: "!!".to_string(),
         });
 
-        assert_eq!(format!("{:?}", result_missing), format!("{:?}", expected),);
+        assert_eq!(format!("{result_missing:?}"), format!("{expected:?}"),);
     }
     #[test]
     fn process_shader_def_equal_int() {
@@ -1053,10 +1232,7 @@ fn vertex(
             pos: 124,
             shader_def_name: "TEXTURE".to_string(),
         });
-        assert_eq!(
-            format!("{:?}", result_missing),
-            format!("{:?}", expected_err),
-        );
+        assert_eq!(format!("{result_missing:?}"), format!("{expected_err:?}"),);
 
         let result_wrong_type = processor.preprocess_defs(
             WGSL,
@@ -1075,8 +1251,8 @@ fn vertex(
         });
 
         assert_eq!(
-            format!("{:?}", result_wrong_type),
-            format!("{:?}", expected_err)
+            format!("{result_wrong_type:?}"),
+            format!("{expected_err:?}")
         );
     }
 
@@ -1297,10 +1473,7 @@ fn vertex(
             pos: 124,
             shader_def_name: "TEXTURE".to_string(),
         });
-        assert_eq!(
-            format!("{:?}", result_missing),
-            format!("{:?}", expected_err),
-        );
+        assert_eq!(format!("{result_missing:?}"), format!("{expected_err:?}"),);
 
         let result_wrong_type = processor.preprocess_defs(
             WGSL,
@@ -1318,8 +1491,8 @@ fn vertex(
             value: "false".to_string(),
         });
         assert_eq!(
-            format!("{:?}", result_wrong_type),
-            format!("{:?}", expected_err),
+            format!("{result_wrong_type:?}"),
+            format!("{expected_err:?}"),
         );
     }
 

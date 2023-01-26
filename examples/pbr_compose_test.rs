@@ -8,7 +8,7 @@ use naga_oil::compose::{
 fn init_composer() -> Composer {
     let mut composer = Composer::default();
 
-    let mut load_composable = |source: &str, file_path: &str| -> () {
+    let mut load_composable = |source: &str, file_path: &str| {
         match composer.add_composable_module(ComposableModuleDescriptor {
             source,
             file_path,
@@ -18,7 +18,7 @@ fn init_composer() -> Composer {
                 // println!("{} -> {:#?}", module.name, module)
             }
             Err(e) => {
-                println!("{} -> {:#?}", "?", e)
+                println!("? -> {e:#?}")
             }
         }
     };
@@ -126,7 +126,7 @@ fn test_compose_final_module(n: usize, composer: &mut Composer) {
                 Ok(module)
             }
             Err(e) => {
-                println!("error: {:#?}", e);
+                println!("error: {e:#?}");
                 Err(e)
             }
         };
@@ -139,7 +139,7 @@ fn test_compose_final_module(n: usize, composer: &mut Composer) {
 
 // make shader module from string
 fn test_wgsl_string_compile(n: usize) {
-    let instance = wgpu::Instance::new(wgpu::Backends::all());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
     let adapter = instance
         .enumerate_adapters(wgpu::Backends::all())
         .next()
@@ -162,7 +162,7 @@ fn test_wgsl_string_compile(n: usize) {
 
 // make shader module from composed naga
 fn test_composer_compile(n: usize, composer: &mut Composer) {
-    let instance = wgpu::Instance::new(wgpu::Backends::all());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
     let adapter = instance
         .enumerate_adapters(wgpu::Backends::all())
         .next()
