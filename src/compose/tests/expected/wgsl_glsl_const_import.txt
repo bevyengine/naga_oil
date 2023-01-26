@@ -2,12 +2,12 @@ struct FragmentOutput {
     @location(0) out_color: vec4<f32>,
 }
 
-let _naga_oil__mod__MNXW23LPNY__member__my_constant: f32 = 0.5;
+const _naga_oil_mod_MNXW23LPNY_membermy_constant: f32 = 0.5;
 
 var<private> out_color: vec4<f32>;
 
 fn main_1() {
-    out_color = vec4<f32>(f32(1), 0.5, f32(0), f32(1));
+    out_color = vec4<f32>(f32(1), _naga_oil_mod_MNXW23LPNY_membermy_constant, f32(0), f32(1));
     return;
 }
 

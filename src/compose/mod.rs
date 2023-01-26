@@ -826,7 +826,7 @@ impl Composer {
                 let mut string = String::new();
                 let options = naga::back::glsl::Options {
                     version: naga::back::glsl::Version::Desktop(450),
-                    writer_flags: naga::back::glsl::WriterFlags::empty(),
+                    writer_flags: naga::back::glsl::WriterFlags::INCLUDE_UNUSED_ITEMS,
                     ..Default::default()
                 };
                 let pipeline_options = naga::back::glsl::PipelineOptions {
