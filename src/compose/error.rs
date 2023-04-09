@@ -73,6 +73,8 @@ pub enum ComposerErrorInner {
     NotEnoughEndIfs(usize),
     #[error("Too many '# endif' lines. Each endif should be preceded by an if statement.")]
     TooManyEndIfs(usize),
+    #[error("'#else' without preceding condition.")]
+    ElseWithoutCondition(usize),
     #[error("Unknown shader def operator: '{operator}'")]
     UnknownShaderDefOperator { pos: usize, operator: String },
     #[error("Unknown shader def: '{shader_def_name}'")]
@@ -205,6 +207,7 @@ impl ComposerError {
             ),
             ComposerErrorInner::NotEnoughEndIfs(pos)
             | ComposerErrorInner::TooManyEndIfs(pos)
+            | ComposerErrorInner::ElseWithoutCondition(pos)
             | ComposerErrorInner::UnknownShaderDef { pos, .. }
             | ComposerErrorInner::UnknownShaderDefOperator { pos, .. }
             | ComposerErrorInner::InvalidShaderDefComparisonValue { pos, .. }
