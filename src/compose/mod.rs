@@ -130,7 +130,7 @@ use regex::Regex;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use tracing::{debug, trace};
 
-use crate::{derive::DerivedModule, redirect::Redirector};
+use crate::{compose::preprocess::PreprocessOutput, derive::DerivedModule, redirect::Redirector};
 
 pub use self::error::{ComposerError, ComposerErrorInner, ErrSource};
 use self::preprocess::Preprocessor;
@@ -848,9 +848,13 @@ impl Composer {
             }
         };
 
-        let (_, source, imports) = self
+        let PreprocessOutput {
+            name: _,
+            preprocessed_source: source,
+            imports,
+        } = self
             .preprocessor
-            .preprocess_defs(
+            .preprocess(
                 &module_definition.substituted_source,
                 shader_defs,
                 self.validate,
@@ -1286,13 +1290,14 @@ impl Composer {
         module_set: &ComposableModuleDefinition,
         shader_defs: &HashMap<String, ShaderDefValue>,
     ) -> Result<ComposableModule, ComposerError> {
-        let (_, _, imports) = self
+        let imports = self
             .preprocessor
-            .preprocess_defs(&module_set.substituted_source, shader_defs, self.validate)
+            .preprocess(&module_set.substituted_source, shader_defs, self.validate)
             .map_err(|inner| ComposerError {
                 inner,
                 source: ErrSource::Module(module_set.name.to_owned(), 0),
-            })?;
+            })?
+            .imports;
 
         self.ensure_imports(imports.iter().map(|import| &import.definition), shader_defs)?;
         self.ensure_imports(&module_set.additional_imports, shader_defs)?;
@@ -1545,9 +1550,13 @@ impl Composer {
             mut shader_defs,
             additional_imports,
         } = desc;
-        let (name, modified_source, imports) = self
+        let PreprocessOutput {
+            name,
+            preprocessed_source,
+            imports,
+        } = self
             .preprocessor
-            .preprocess_defs(source, &shader_defs, false)
+            .preprocess(source, &shader_defs, false)
             .map_err(|inner| ComposerError {
                 inner,
                 source: ErrSource::Constructing {
@@ -1689,7 +1698,7 @@ impl Composer {
                             inner: e.into(),
                             source: ErrSource::Constructing {
                                 path: file_path.to_owned(),
-                                source: modified_source.clone(),
+                                source: preprocessed_source.clone(),
                                 offset: composable.start_offset,
                             },
                         })?;
@@ -1702,7 +1711,7 @@ impl Composer {
                 inner: e.into(),
                 source: ErrSource::Constructing {
                     path: file_path.to_owned(),
-                    source: modified_source.clone(),
+                    source: preprocessed_source.clone(),
                     offset: composable.start_offset,
                 },
             })?;
@@ -1742,7 +1751,7 @@ impl Composer {
                         }
                         None => ErrSource::Constructing {
                             path: file_path.to_owned(),
-                            source: modified_source,
+                            source: preprocessed_source,
                             offset: composable.start_offset,
                         },
                     };

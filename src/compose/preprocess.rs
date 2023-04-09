@@ -28,7 +28,7 @@ impl Default for Preprocessor {
             version_regex: Regex::new(r"^\s*#version\s+([0-9]+)").unwrap(),
             ifdef_regex: Regex::new(r"^\s*#\s*ifdef\s+([\w|\d|_]+)").unwrap(),
             ifndef_regex: Regex::new(r"^\s*#\s*ifndef\s+([\w|\d|_]+)").unwrap(),
-            ifop_regex: Regex::new(r"^\s*#\s*if\s+([\w|\d|_]+)\s*([^\s]*)\s*([\w|\d]+)").unwrap(),
+            ifop_regex: Regex::new(r"^\s*#\s*if\s+([\w|\d|_]+)\s*([=!<>]*)\s*([-\w|\d]+)").unwrap(),
             else_regex: Regex::new(r"^\s*#\s*else").unwrap(),
             endif_regex: Regex::new(r"^\s*#\s*endif").unwrap(),
             def_regex: Regex::new(r"#\s*([\w|\d|_]+)").unwrap(),
@@ -46,16 +46,23 @@ impl Default for Preprocessor {
     }
 }
 
+#[derive(Debug)]
+pub struct PreprocessOutput {
+    pub name: Option<String>,
+    pub preprocessed_source: String,
+    pub imports: Vec<ImportDefWithOffset>,
+}
+
 impl Preprocessor {
     // process #if[(n)?def]? / #else / #endif preprocessor directives,
     // strip module name and imports
     // also strip "#version xxx"
-    pub fn preprocess_defs(
+    pub fn preprocess(
         &self,
         shader_str: &str,
         shader_defs: &HashMap<String, ShaderDefValue>,
         mut validate_len: bool,
-    ) -> Result<(Option<String>, String, Vec<ImportDefWithOffset>), ComposerErrorInner> {
+    ) -> Result<PreprocessOutput, ComposerErrorInner> {
         let mut imports = Vec::new();
         let mut scopes = vec![true];
         let mut final_string = String::new();
@@ -246,7 +253,11 @@ impl Preprocessor {
             assert_eq!(len, revised_len);
         }
 
-        Ok((name, final_string, imports))
+        Ok(PreprocessOutput {
+            name,
+            preprocessed_source: final_string,
+            imports,
+        })
     }
 
     // extract module name and imports
@@ -355,19 +366,17 @@ fn vertex(
 
         let processor = Preprocessor::default();
 
-        let result_missing = processor.preprocess_defs(
+        let result_missing = processor.preprocess(
             WGSL,
             &[("TEXTURE".to_owned(), ShaderDefValue::Bool(true))].into(),
             true,
         );
 
-        let expected: Result<
-            (Option<String>, String, Vec<ImportDefWithOffset>),
-            ComposerErrorInner,
-        > = Err(ComposerErrorInner::UnknownShaderDefOperator {
-            pos: 124,
-            operator: "!!".to_string(),
-        });
+        let expected: Result<Preprocessor, ComposerErrorInner> =
+            Err(ComposerErrorInner::UnknownShaderDefOperator {
+                pos: 124,
+                operator: "!!".to_string(),
+            });
 
         assert_eq!(format!("{result_missing:?}"), format!("{expected:?}"),);
     }
@@ -458,24 +467,24 @@ fn vertex(
 ";
         let processor = Preprocessor::default();
         let result_eq = processor
-            .preprocess_defs(
+            .preprocess(
                 WGSL,
                 &[("TEXTURE".to_string(), ShaderDefValue::Int(3))].into(),
                 true,
             )
             .unwrap();
-        assert_eq!(result_eq.1, EXPECTED_EQ);
+        assert_eq!(result_eq.preprocessed_source, EXPECTED_EQ);
 
         let result_neq = processor
-            .preprocess_defs(
+            .preprocess(
                 WGSL,
                 &[("TEXTURE".to_string(), ShaderDefValue::Int(7))].into(),
                 true,
             )
             .unwrap();
-        assert_eq!(result_neq.1, EXPECTED_NEQ);
+        assert_eq!(result_neq.preprocessed_source, EXPECTED_NEQ);
 
-        let result_missing = processor.preprocess_defs(WGSL, &Default::default(), true);
+        let result_missing = processor.preprocess(WGSL, &Default::default(), true);
 
         let expected_err: Result<
             (Option<String>, String, Vec<ImportDefWithOffset>),
@@ -486,7 +495,7 @@ fn vertex(
         });
         assert_eq!(format!("{result_missing:?}"), format!("{expected_err:?}"),);
 
-        let result_wrong_type = processor.preprocess_defs(
+        let result_wrong_type = processor.preprocess(
             WGSL,
             &[("TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
             true,
@@ -595,22 +604,22 @@ fn vertex(
 ";
         let processor = Preprocessor::default();
         let result_eq = processor
-            .preprocess_defs(
+            .preprocess(
                 WGSL,
                 &[("TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
                 true,
             )
             .unwrap();
-        assert_eq!(result_eq.1, EXPECTED_EQ);
+        assert_eq!(result_eq.preprocessed_source, EXPECTED_EQ);
 
         let result_neq = processor
-            .preprocess_defs(
+            .preprocess(
                 WGSL,
                 &[("TEXTURE".to_string(), ShaderDefValue::Bool(false))].into(),
                 true,
             )
             .unwrap();
-        assert_eq!(result_neq.1, EXPECTED_NEQ);
+        assert_eq!(result_neq.preprocessed_source, EXPECTED_NEQ);
     }
 
     #[test]
@@ -700,24 +709,24 @@ fn vertex(
 ";
         let processor = Preprocessor::default();
         let result_eq = processor
-            .preprocess_defs(
+            .preprocess(
                 WGSL,
                 &[("TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
                 true,
             )
             .unwrap();
-        assert_eq!(result_eq.1, EXPECTED_EQ);
+        assert_eq!(result_eq.preprocessed_source, EXPECTED_EQ);
 
         let result_neq = processor
-            .preprocess_defs(
+            .preprocess(
                 WGSL,
                 &[("TEXTURE".to_string(), ShaderDefValue::Bool(false))].into(),
                 true,
             )
             .unwrap();
-        assert_eq!(result_neq.1, EXPECTED_NEQ);
+        assert_eq!(result_neq.preprocessed_source, EXPECTED_NEQ);
 
-        let result_missing = processor.preprocess_defs(WGSL, &[].into(), true);
+        let result_missing = processor.preprocess(WGSL, &[].into(), true);
         let expected_err: Result<
             (Option<String>, String, Vec<ImportDefWithOffset>),
             ComposerErrorInner,
@@ -727,7 +736,7 @@ fn vertex(
         });
         assert_eq!(format!("{result_missing:?}"), format!("{expected_err:?}"),);
 
-        let result_wrong_type = processor.preprocess_defs(
+        let result_wrong_type = processor.preprocess(
             WGSL,
             &[("TEXTURE".to_string(), ShaderDefValue::Int(7))].into(),
             true,
@@ -807,7 +816,7 @@ fn vertex(
 ";
         let processor = Preprocessor::default();
         let result = processor
-            .preprocess_defs(
+            .preprocess(
                 WGSL,
                 &[
                     ("BOOL_VALUE".to_string(), ShaderDefValue::Bool(true)),
@@ -818,6 +827,6 @@ fn vertex(
                 true,
             )
             .unwrap();
-        assert_eq!(result.1, EXPECTED_REPLACED);
+        assert_eq!(result.preprocessed_source, EXPECTED_REPLACED);
     }
 }
