@@ -104,6 +104,14 @@ pub enum ComposerErrorInner {
         "Composable module identifiers must not require substitution according to naga writeback rules: `{original}`"
     )]
     InvalidIdentifier { original: String, at: naga::Span },
+    #[error("Invalid value for `#define`d shader def {name}: {value}")]
+    InvalidShaderDefDefinitionValue {
+        name: String,
+        value: String,
+        pos: usize,
+    },
+    #[error("#define statements are only allowed at the start of the top-level shaders")]
+    DefineInModule(usize),
 }
 
 struct ErrorSources<'a> {
@@ -201,7 +209,9 @@ impl ComposerError {
             | ComposerErrorInner::UnknownShaderDefOperator { pos, .. }
             | ComposerErrorInner::InvalidShaderDefComparisonValue { pos, .. }
             | ComposerErrorInner::OverrideNotVirtual { pos, .. }
-            | ComposerErrorInner::GlslInvalidVersion(pos) => {
+            | ComposerErrorInner::GlslInvalidVersion(pos)
+            | ComposerErrorInner::DefineInModule(pos)
+            | ComposerErrorInner::InvalidShaderDefDefinitionValue { pos, .. } => {
                 (vec![Label::primary((), *pos..*pos)], vec![])
             }
             ComposerErrorInner::WgslBackError(e) => {

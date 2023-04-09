@@ -20,6 +20,7 @@ pub struct Preprocessor {
     import_items_regex: Regex,
     identifier_regex: Regex,
     define_import_path_regex: Regex,
+    define_shader_def_regex: Regex,
 }
 
 impl Default for Preprocessor {
@@ -42,15 +43,22 @@ impl Default for Preprocessor {
             .unwrap(),
             identifier_regex: Regex::new(r"([\w|\d|_]+)").unwrap(),
             define_import_path_regex: Regex::new(r"^\s*#\s*define_import_path\s+([^\s]+)").unwrap(),
+            define_shader_def_regex: Regex::new(r"^\s*#\s*define\s+([\w|\d|_]+)\s*([-\w|\d]+)?")
+                .unwrap(),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct PreprocessOutput {
+pub struct PreprocessorMetaData {
     pub name: Option<String>,
-    pub preprocessed_source: String,
     pub imports: Vec<ImportDefWithOffset>,
+}
+
+#[derive(Debug)]
+pub struct PreprocessOutput {
+    pub preprocessed_source: String,
+    pub meta: PreprocessorMetaData,
 }
 
 impl Preprocessor {
@@ -69,12 +77,19 @@ impl Preprocessor {
         let mut name = None;
         let mut offset = 0;
 
+        let mut at_start = true;
+
         #[cfg(debug)]
         let len = shader_str.len();
 
         // this code broadly stolen from bevy_render::ShaderProcessor
         for line in shader_str.lines() {
             let mut output = false;
+            let mut still_at_start = false;
+            if line.is_empty() {
+                still_at_start = true;
+            }
+
             if let Some(cap) = self.version_regex.captures(line) {
                 let v = cap.get(1).unwrap().as_str();
                 if v != "440" && v != "450" {
@@ -169,6 +184,38 @@ impl Preprocessor {
                 }
             } else if let Some(cap) = self.define_import_path_regex.captures(line) {
                 name = Some(cap.get(1).unwrap().as_str().to_string());
+            } else if let Some(cap) = self.define_shader_def_regex.captures(line) {
+                if at_start {
+                    still_at_start = true;
+
+                    let def = cap.get(1).unwrap();
+                    let name = def.as_str().to_string();
+
+                    let value = if let Some(val) = cap.get(2) {
+                        if let Ok(val) = val.as_str().parse::<u32>() {
+                            ShaderDefValue::UInt(val)
+                        } else if let Ok(val) = val.as_str().parse::<i32>() {
+                            ShaderDefValue::Int(val)
+                        } else if let Ok(val) = val.as_str().parse::<bool>() {
+                            ShaderDefValue::Bool(val)
+                        } else {
+                            return Err(ComposerErrorInner::InvalidShaderDefDefinitionValue {
+                                name,
+                                value: val.as_str().to_string(),
+                                pos: offset,
+                            });
+                        }
+                    } else {
+                        ShaderDefValue::Bool(true)
+                    };
+
+                    match shader_defs.get(name.as_str()) {
+                        Some(current_value) if *current_value == value => (),
+                        _ => return Err(ComposerErrorInner::DefineInModule(offset)),
+                    }
+                } else {
+                    return Err(ComposerErrorInner::DefineInModule(offset));
+                }
             } else if *scopes.last().unwrap() {
                 if let Some(cap) = self.import_custom_path_as_regex.captures(line) {
                     imports.push(ImportDefWithOffset {
@@ -241,6 +288,8 @@ impl Preprocessor {
             }
             final_string.push('\n');
             offset += line.len() + 1;
+
+            at_start &= still_at_start;
         }
 
         if scopes.len() != 1 {
@@ -254,20 +303,22 @@ impl Preprocessor {
         }
 
         Ok(PreprocessOutput {
-            name,
             preprocessed_source: final_string,
-            imports,
+            meta: PreprocessorMetaData { name, imports },
         })
     }
 
-    // extract module name and imports
-    pub fn get_preprocessor_data(
+    // extract module name and all possible imports
+    pub fn get_preprocessor_metadata(
         &self,
         shader_str: &str,
-    ) -> (Option<String>, Vec<ImportDefWithOffset>) {
+        allow_defines: bool,
+    ) -> Result<(PreprocessorMetaData, HashMap<String, ShaderDefValue>), ComposerErrorInner> {
         let mut imports = Vec::new();
         let mut name = None;
         let mut offset = 0;
+        let mut defines = HashMap::default();
+
         for line in shader_str.lines() {
             if let Some(cap) = self.import_custom_path_as_regex.captures(line) {
                 imports.push(ImportDefWithOffset {
@@ -303,12 +354,35 @@ impl Preprocessor {
                 });
             } else if let Some(cap) = self.define_import_path_regex.captures(line) {
                 name = Some(cap.get(1).unwrap().as_str().to_string());
+            } else if let Some(cap) = self.define_shader_def_regex.captures(line) {
+                if allow_defines {
+                    let def = cap.get(1).unwrap();
+                    let name = def.as_str().to_string();
+
+                    let value = if let Some(val) = cap.get(2) {
+                        if let Ok(val) = val.as_str().parse::<u32>() {
+                            ShaderDefValue::UInt(val)
+                        } else if let Ok(val) = val.as_str().parse::<i32>() {
+                            ShaderDefValue::Int(val)
+                        } else if let Ok(val) = val.as_str().parse::<bool>() {
+                            ShaderDefValue::Bool(val)
+                        } else {
+                            ShaderDefValue::Bool(false) // this error will get picked up when we fully preprocess the module
+                        }
+                    } else {
+                        ShaderDefValue::Bool(true)
+                    };
+
+                    defines.insert(name, value);
+                } else {
+                    return Err(ComposerErrorInner::DefineInModule(offset));
+                }
             }
 
             offset += line.len() + 1;
         }
 
-        (name, imports)
+        Ok((PreprocessorMetaData { name, imports }, defines))
     }
 
     pub fn effective_defs(&self, source: &str) -> HashSet<String> {
@@ -828,5 +902,69 @@ fn vertex(
             )
             .unwrap();
         assert_eq!(result.preprocessed_source, EXPECTED_REPLACED);
+    }
+
+    #[test]
+    fn process_shader_define_in_shader() {
+        #[rustfmt::skip]
+        const WGSL: &str = r"
+#define NOW_DEFINED
+#ifdef NOW_DEFINED
+defined
+#endif
+";
+
+        #[rustfmt::skip]
+        const EXPECTED: &str = r"
+                   
+                  
+defined
+      
+";
+        let processor = Preprocessor::default();
+        let (_, defines) = processor.get_preprocessor_metadata(&WGSL, true).unwrap();
+        println!("defines: {:?}", defines);
+        let result = processor.preprocess(&WGSL, &defines, true).unwrap();
+        assert_eq!(result.preprocessed_source, EXPECTED);
+    }
+
+    #[test]
+    fn process_shader_define_in_shader_with_value() {
+        #[rustfmt::skip]
+        const WGSL: &str = r"
+#define DEFUINT 1
+#define DEFINT -1
+#define DEFBOOL false
+#if DEFUINT == 1
+uint: #DEFUINT
+#endif
+#if DEFINT == -1
+int: #DEFINT
+#endif
+#if DEFBOOL == false
+bool: #DEFBOOL
+#endif
+";
+
+        #[rustfmt::skip]
+        const EXPECTED: &str = r"
+                 
+                 
+                     
+                
+uint: 1       
+      
+                
+int: -1     
+      
+                    
+bool: false   
+      
+";
+        let processor = Preprocessor::default();
+        let (_, defines) = processor.get_preprocessor_metadata(&WGSL, true).unwrap();
+        println!("defines: {:?}", defines);
+        let result = processor.preprocess(&WGSL, &defines, true).unwrap();
+        assert_eq!(result.preprocessed_source, EXPECTED);
     }
 }

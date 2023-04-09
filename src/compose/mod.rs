@@ -130,7 +130,11 @@ use regex::Regex;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use tracing::{debug, trace};
 
-use crate::{compose::preprocess::PreprocessOutput, derive::DerivedModule, redirect::Redirector};
+use crate::{
+    compose::preprocess::{PreprocessOutput, PreprocessorMetaData},
+    derive::DerivedModule,
+    redirect::Redirector,
+};
 
 pub use self::error::{ComposerError, ComposerErrorInner, ErrSource};
 use self::preprocess::Preprocessor;
@@ -849,9 +853,8 @@ impl Composer {
         };
 
         let PreprocessOutput {
-            name: _,
             preprocessed_source: source,
-            imports,
+            meta: PreprocessorMetaData { imports, .. },
         } = self
             .preprocessor
             .preprocess(
@@ -1297,6 +1300,7 @@ impl Composer {
                 inner,
                 source: ErrSource::Module(module_set.name.to_owned(), 0),
             })?
+            .meta
             .imports;
 
         self.ensure_imports(imports.iter().map(|import| &import.definition), shader_defs)?;
@@ -1418,7 +1422,23 @@ impl Composer {
             });
         }
 
-        let (module_name, mut imports) = self.preprocessor.get_preprocessor_data(source);
+        let (
+            PreprocessorMetaData {
+                name: module_name,
+                mut imports,
+            },
+            _,
+        ) = self
+            .preprocessor
+            .get_preprocessor_metadata(source, false)
+            .map_err(|inner| ComposerError {
+                inner,
+                source: ErrSource::Constructing {
+                    path: file_path.to_owned(),
+                    source: source.to_owned(),
+                    offset: 0,
+                },
+            })?;
         let module_name = as_name.or(module_name);
         if module_name.is_none() {
             return Err(ComposerError {
@@ -1550,10 +1570,23 @@ impl Composer {
             mut shader_defs,
             additional_imports,
         } = desc;
+
+        let (_, defines) = self
+            .preprocessor
+            .get_preprocessor_metadata(source, true)
+            .map_err(|inner| ComposerError {
+                inner,
+                source: ErrSource::Constructing {
+                    path: file_path.to_owned(),
+                    source: source.to_owned(),
+                    offset: 0,
+                },
+            })?;
+        shader_defs.extend(defines.into_iter());
+
         let PreprocessOutput {
-            name,
             preprocessed_source,
-            imports,
+            meta: PreprocessorMetaData { name, imports },
         } = self
             .preprocessor
             .preprocess(source, &shader_defs, false)
@@ -1772,13 +1805,22 @@ static PREPROCESSOR: once_cell::sync::Lazy<Preprocessor> =
     once_cell::sync::Lazy::new(Preprocessor::default);
 
 /// Get module name and all required imports (ignoring shader_defs) from a shader string
-pub fn get_preprocessor_data(source: &str) -> (Option<String>, Vec<ImportDefinition>) {
-    let (name, imports) = PREPROCESSOR.get_preprocessor_data(source);
+pub fn get_preprocessor_data(
+    source: &str,
+) -> (
+    Option<String>,
+    Vec<ImportDefinition>,
+    HashMap<String, ShaderDefValue>,
+) {
+    let (PreprocessorMetaData { name, imports }, defines) = PREPROCESSOR
+        .get_preprocessor_metadata(source, true)
+        .unwrap();
     (
         name,
         imports
             .into_iter()
             .map(|import_with_offset| import_with_offset.definition)
             .collect(),
+        defines,
     )
 }
