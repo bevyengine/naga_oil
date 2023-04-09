@@ -174,14 +174,7 @@ impl Preprocessor {
             } else if let Some(cap) = self.ifdef_regex.captures(line) {
                 let is_else = cap.get(1).is_some();
                 let cond = shader_defs.contains_key(cap.get(2).unwrap().as_str());
-                println!("state: {}", scope.active());
                 scope.branch(is_else, cond, offset)?;
-                println!(
-                    "else: {}, cond: {}, state: {}",
-                    is_else,
-                    cond,
-                    scope.active()
-                );
             } else if let Some(cap) = self.ifndef_regex.captures(line) {
                 let is_else = cap.get(1).is_some();
                 let cond = !shader_defs.contains_key(cap.get(2).unwrap().as_str());
