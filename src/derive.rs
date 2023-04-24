@@ -329,13 +329,30 @@ impl<'a> DerivedModule<'a> {
                     Statement::Return { value } => Statement::Return {
                         value: map_expr_opt!(value),
                     },
+                    Statement::RayQuery { query, fun } => Statement::RayQuery {
+                        query: map_expr!(query),
+                        fun: match fun {
+                            naga::RayQueryFunction::Initialize {
+                                acceleration_structure,
+                                descriptor,
+                            } => naga::RayQueryFunction::Initialize {
+                                acceleration_structure: map_expr!(acceleration_structure),
+                                descriptor: map_expr!(descriptor),
+                            },
+                            naga::RayQueryFunction::Proceed { result } => {
+                                naga::RayQueryFunction::Proceed {
+                                    result: map_expr!(result),
+                                }
+                            }
+                            naga::RayQueryFunction::Terminate => naga::RayQueryFunction::Terminate,
+                        },
+                    },
 
                     // else just copy
                     Statement::Break
                     | Statement::Continue
                     | Statement::Kill
-                    | Statement::Barrier(_)
-                    | Statement::RayQuery { .. } => stmt.clone(),
+                    | Statement::Barrier(_) => stmt.clone(),
                 }
             })
             .collect();
@@ -533,8 +550,13 @@ impl<'a> DerivedModule<'a> {
             }
 
             Expression::AtomicResult { .. } => expr.clone(),
-            Expression::RayQueryProceedResult { .. } => expr.clone(),
-            Expression::RayQueryGetIntersection { .. } => expr.clone(),
+            Expression::RayQueryProceedResult => expr.clone(),
+            Expression::RayQueryGetIntersection { query, committed } => {
+                Expression::RayQueryGetIntersection {
+                    query: map_expr!(query),
+                    committed: *committed,
+                }
+            }
         };
 
         if !non_emitting_only || is_external {
