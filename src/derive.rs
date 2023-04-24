@@ -1,4 +1,5 @@
 use crate::util::copy_type;
+use indexmap::IndexMap;
 use naga::{
     Arena, ArraySize, Block, Constant, ConstantInner, EntryPoint, Expression, Function,
     FunctionArgument, FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module,
@@ -79,7 +80,9 @@ impl<'a> DerivedModule<'a> {
                     | TypeInner::ValuePointer { .. }
                     | TypeInner::Image { .. }
                     | TypeInner::Sampler { .. }
-                    | TypeInner::Atomic { .. } => copy_type(ty).inner,
+                    | TypeInner::Atomic { .. }
+                    | TypeInner::AccelerationStructure
+                    | TypeInner::RayQuery => copy_type(ty).inner,
 
                     TypeInner::Pointer { base, space } => TypeInner::Pointer {
                         base: self.import_type(base),
@@ -331,7 +334,8 @@ impl<'a> DerivedModule<'a> {
                     Statement::Break
                     | Statement::Continue
                     | Statement::Kill
-                    | Statement::Barrier(_) => stmt.clone(),
+                    | Statement::Barrier(_)
+                    | Statement::RayQuery { .. } => stmt.clone(),
                 }
             })
             .collect();
@@ -490,9 +494,10 @@ impl<'a> DerivedModule<'a> {
                 accept: map_expr!(accept),
                 reject: map_expr!(reject),
             },
-            Expression::Derivative { axis, expr } => Expression::Derivative {
+            Expression::Derivative { axis, expr, ctrl } => Expression::Derivative {
                 axis: *axis,
                 expr: map_expr!(expr),
+                ctrl: *ctrl,
             },
             Expression::Relational { fun, argument } => Expression::Relational {
                 fun: *fun,
@@ -528,6 +533,8 @@ impl<'a> DerivedModule<'a> {
             }
 
             Expression::AtomicResult { .. } => expr.clone(),
+            Expression::RayQueryProceedResult { .. } => expr.clone(),
+            Expression::RayQueryGetIntersection { .. } => expr.clone(),
         };
 
         if !non_emitting_only || is_external {
@@ -584,7 +591,7 @@ impl<'a> DerivedModule<'a> {
             .named_expressions
             .iter()
             .flat_map(|(h_expr, name)| expr_map.get(h_expr).map(|new_h| (*new_h, name.clone())))
-            .collect::<HashMap<_, _, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>>();
+            .collect::<IndexMap<_, _, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>>();
 
         Function {
             name: func.name.clone(),
@@ -661,6 +668,7 @@ impl<'a> From<DerivedModule<'a>> for naga::Module {
             constants: derived.constants,
             global_variables: derived.globals,
             functions: derived.functions,
+            special_types: Default::default(),
             entry_points: Default::default(),
         }
     }

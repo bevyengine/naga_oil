@@ -7,5 +7,5 @@
 layout(location = 0) out vec4 o_Target;
 
 void main() {
-    o_Target = vec4(wgsl_module::wgsl_func());
+    gl_Position = vec4(wgsl_module::wgsl_func());
 }
