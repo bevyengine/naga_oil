@@ -1,10 +1,8 @@
 struct VertexOutput {
-    @location(0) o_Target: vec4<f32>,
     @builtin(position) member: vec4<f32>,
 }
 
 var<private> gl_Position: vec4<f32>;
-var<private> o_Target: vec4<f32>;
 
 fn _naga_oil_mod_O5TXG3C7NVXWI5LMMU_memberwgsl_func() -> f32 {
     return 53.0;
@@ -19,7 +17,6 @@ fn main_1() {
 @vertex 
 fn main() -> VertexOutput {
     main_1();
-    let _e1: vec4<f32> = o_Target;
-    let _e3: vec4<f32> = gl_Position;
-    return VertexOutput(_e1, _e3);
+    let _e1: vec4<f32> = gl_Position;
+    return VertexOutput(_e1);
 }
