@@ -264,7 +264,7 @@ impl<'a> DerivedModule<'a> {
                         cases: cases
                             .iter()
                             .map(|case| SwitchCase {
-                                value: case.value.clone(),
+                                value: case.value,
                                 body: map_block!(&case.body),
                                 fall_through: case.fall_through,
                             })
