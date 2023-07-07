@@ -1,0 +1,8 @@
+error: Duplicated import name: `import`
+  ┌─ tests/dup_import_name/top.wgsl:1:24
+  │
+1 │ #import path_a::import
+  │                        
+  │
+  = duplicate import 'import'
+

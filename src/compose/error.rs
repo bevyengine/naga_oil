@@ -92,6 +92,8 @@ pub enum ComposerErrorInner {
     InconsistentShaderDefValue { def: String },
     #[error("Attempted to add a module with no #define_import_path")]
     NoModuleName,
+    #[error("Duplicated import name: `{name}`")]
+    DuplicateImportName { pos: usize, name: String },
     #[error("source contains internal decoration string, results probably won't be what you expect. if you have a legitimate reason to do this please file a report")]
     DecorationInSource(Range<usize>),
     #[error("naga oil only supports glsl 440 and 450")]
@@ -190,6 +192,10 @@ impl ComposerError {
             ComposerErrorInner::ImportNotFound(msg, pos) => (
                 vec![Label::primary((), *pos..*pos)],
                 vec![format!("missing import '{msg}'")],
+            ),
+            ComposerErrorInner::DuplicateImportName { name, pos } => (
+                vec![Label::primary((), *pos..*pos)],
+                vec![format!("duplicate import '{name}'")],
             ),
             ComposerErrorInner::WgslParseError(e) => (
                 e.labels()

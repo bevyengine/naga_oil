@@ -287,6 +287,13 @@ impl ComposableModuleDefinition {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ImportRef<'a> {
+    as_name: &'a str,
+    import: &'a str,
+    items: Option<&'a Vec<String>>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ImportDefinition {
     pub import: String,
@@ -297,6 +304,14 @@ pub struct ImportDefinition {
 impl ImportDefinition {
     fn as_name(&self) -> &str {
         self.as_name.as_deref().unwrap_or(self.import.as_str())
+    }
+
+    fn as_import_ref(&self) -> ImportRef {
+        ImportRef {
+            as_name: self.as_name(),
+            import: self.import.as_str(),
+            items: self.items.as_ref(),
+        }
     }
 }
 
@@ -431,28 +446,61 @@ impl Composer {
             substituted_source.push('\n');
         }
 
+        let mut import_data = imports
+            .iter()
+            .map(|import| import.definition.as_import_ref())
+            .collect::<Vec<_>>();
+        // add short-form module name if required (`pbr_bindings` if the name is `bevy_pbr::pbr_bindings`)
+        for import in imports.iter() {
+            if import.definition.as_name.is_none()
+                && import.definition.items.is_none()
+                && import.definition.import.as_str().contains("::")
+            {
+                let as_name = import
+                    .definition
+                    .import
+                    .as_str()
+                    .rsplit_once("::")
+                    .unwrap()
+                    .1;
+
+                // ensure it's not already being used
+                if import_data.iter().any(|import| import.as_name == as_name) {
+                    return Err(ComposerErrorInner::DuplicateImportName {
+                        pos: import.offset,
+                        name: as_name.to_owned(),
+                    });
+                }
+
+                import_data.push(ImportRef {
+                    import: import.definition.import.as_str(),
+                    as_name,
+                    items: import.definition.items.as_ref(),
+                });
+            }
+        }
+
         // sort imports by decreasing length so we don't accidentally replace substrings of a longer import
-        let mut imports = imports.to_vec();
-        imports.sort_by_key(|import| usize::MAX - import.definition.as_name().len());
+        import_data.sort_by_key(|import| usize::MAX - import.as_name.len());
 
         let mut imported_items = HashMap::new();
 
-        for import in imports {
-            match import.definition.items {
+        for import in import_data {
+            match import.items {
                 Some(items) => {
                     // gather individual imported items
-                    for item in &items {
+                    for item in items {
                         imported_items.insert(
                             item.clone(),
-                            format!("{}{}", Self::decorate(&import.definition.import), item),
+                            format!("{}{}", Self::decorate(import.import), item),
                         );
                     }
                 }
                 None => {
                     // replace the module name directly
                     substituted_source = substituted_source.replace(
-                        format!("{}::", import.definition.as_name()).as_str(),
-                        &Self::decorate(&import.definition.import),
+                        format!("{}::", import.as_name).as_str(),
+                        &Self::decorate(import.import),
                     );
                 }
             }

@@ -968,6 +968,39 @@ mod test {
         output_eq!(wgsl, "tests/expected/dup_struct_import.txt");
     }
 
+    #[test]
+    fn test_duplicate_import_name() {
+        let mut composer = Composer::default();
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/dup_import_name/import_a.wgsl"),
+                file_path: "tests/dup_import_name/import_a.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/dup_import_name/import_b.wgsl"),
+                file_path: "tests/dup_import_name/import_b.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let error = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/dup_import_name/top.wgsl"),
+                file_path: "tests/dup_import_name/top.wgsl",
+                ..Default::default()
+            })
+            .err()
+            .unwrap();
+
+        let text = error.emit_to_string(&composer);
+
+        output_eq!(text, "tests/expected/dup_import_name.txt")
+    }
+
     // actually run a shader and extract the result
     // needs the composer to contain a module called "test_module", with a function called "entry_point" returning an f32.
     fn test_shader(composer: &mut Composer) -> f32 {
