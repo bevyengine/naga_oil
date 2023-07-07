@@ -1001,6 +1001,64 @@ mod test {
         output_eq!(text, "tests/expected/dup_import_name.txt")
     }
 
+    #[test]
+    fn implicit_import_fail() {
+        let mut composer = Composer::default();
+
+        let error = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/implicit_import/top.wgsl"),
+                file_path: "tests/implicit_import/top.wgsl",
+                ..Default::default()
+            })
+            .err()
+            .unwrap();
+
+        let text = error.emit_to_string(&composer);
+
+        output_eq!(text, "tests/expected/implicit_import_fail.txt")
+    }
+
+    #[test]
+    fn implicit_import() {
+        let mut composer = Composer::default();
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/implicit_import/mod.wgsl"),
+                file_path: "tests/implicit_import/mod.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let module = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/implicit_import/top.wgsl"),
+                file_path: "tests/implicit_import/top.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let info = naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .unwrap();
+        let wgsl = naga::back::wgsl::write_string(
+            &module,
+            &info,
+            naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+        )
+        .unwrap();
+
+        let mut f = std::fs::File::create("implicit_import.txt").unwrap();
+        f.write_all(wgsl.as_bytes()).unwrap();
+        drop(f);
+
+        output_eq!(wgsl, "tests/expected/implicit_import.txt");
+    }
+
     // actually run a shader and extract the result
     // needs the composer to contain a module called "test_module", with a function called "entry_point" returning an f32.
     fn test_shader(composer: &mut Composer) -> f32 {

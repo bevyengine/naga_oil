@@ -1,0 +1,8 @@
+error: required import 'mod' not found
+  ┌─ tests/implicit_import/top.wgsl:2:12
+  │
+2 │     return mod::c;
+  │            ^
+  │
+  = missing import 'mod'
+

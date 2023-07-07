@@ -1,0 +1,6 @@
+const _naga_oil_mod_NVXWI_memberc: u32 = 1u;
+
+fn main() -> u32 {
+    return _naga_oil_mod_NVXWI_memberc;
+}
+

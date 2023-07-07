@@ -21,6 +21,8 @@ pub struct Preprocessor {
     identifier_regex: Regex,
     define_import_path_regex: Regex,
     define_shader_def_regex: Regex,
+    implicit_import_regex: Regex,
+    post_substitution_implicit_import_regex: Regex,
 }
 
 impl Default for Preprocessor {
@@ -48,6 +50,18 @@ impl Default for Preprocessor {
             define_import_path_regex: Regex::new(r"^\s*#\s*define_import_path\s+([^\s]+)").unwrap(),
             define_shader_def_regex: Regex::new(r"^\s*#\s*define\s+([\w|\d|_]+)\s*([-\w|\d]+)?")
                 .unwrap(),
+            implicit_import_regex: Regex::new(r"([\w|\d|_|:]+)::([\w|\d|_]+)").unwrap(),
+            post_substitution_implicit_import_regex: Regex::new(
+                format!(
+                    "{}{}{}{}",
+                    super::DECORATION_PRE,
+                    r"([A-Z0-9]*)",
+                    super::DECORATION_POST,
+                    r"([\w|\d|_]+)"
+                )
+                .as_str(),
+            )
+            .unwrap(),
         }
     }
 }
@@ -136,6 +150,27 @@ pub struct PreprocessOutput {
     pub meta: PreprocessorMetaData,
 }
 
+fn count_block_comments(line: &str, initial_block_depth: usize) -> usize {
+    let mut comment_search_start_index = 0;
+    let mut block_depth = initial_block_depth;
+    while let Some(maybe_comment_index) =
+        line[comment_search_start_index..line.len()].find(|c| c == '/' || c == '*')
+    {
+        if (block_depth > 0)
+            && &line[maybe_comment_index..(maybe_comment_index + 2).min(line.len())] == "*/"
+        {
+            block_depth -= 1;
+            comment_search_start_index += 1;
+        } else if &line[maybe_comment_index..(maybe_comment_index + 2).min(line.len())] == "/*" {
+            block_depth += 1;
+            comment_search_start_index += 1;
+        }
+        comment_search_start_index += maybe_comment_index + 1;
+    }
+
+    block_depth
+}
+
 impl Preprocessor {
     // process #if[(n)?def]? / #else / #endif preprocessor directives,
     // strip module name and imports
@@ -154,6 +189,8 @@ impl Preprocessor {
         let mut offset = 0;
 
         let mut at_start = true;
+        let mut potential_implicit_imports = Vec::new();
+        let mut block_comment_nest_count = 0;
 
         #[cfg(debug)]
         let len = shader_str.len();
@@ -321,6 +358,59 @@ impl Preprocessor {
                         offset,
                     });
                 } else {
+                    for capture in self.implicit_import_regex.captures_iter(line) {
+                        // regex doesn't support lookaround so we manually check this is not in a comment
+                        let match_start_index = capture.get(0).unwrap().range().start;
+                        if line[0..match_start_index].contains("//") {
+                            continue;
+                        }
+
+                        if count_block_comments(
+                            &line[0..match_start_index],
+                            block_comment_nest_count,
+                        ) > 0
+                        {
+                            continue;
+                        }
+
+                        let path = capture.get(1).unwrap().as_str();
+                        let item = capture.get(2).unwrap().as_str();
+
+                        potential_implicit_imports.push((
+                            path.to_owned(),
+                            item,
+                            offset + match_start_index,
+                        ));
+                    }
+                    // in preprocess we also have to capture imports that have already been substituted, as this is recalled from ensure_imports
+                    for capture in self
+                        .post_substitution_implicit_import_regex
+                        .captures_iter(line)
+                    {
+                        // regex doesn't support lookaround so we manually check this is not in a comment
+                        let match_start_index = capture.get(0).unwrap().range().start;
+                        if line[0..match_start_index].contains("//") {
+                            continue;
+                        }
+
+                        if count_block_comments(
+                            &line[0..match_start_index],
+                            block_comment_nest_count,
+                        ) > 0
+                        {
+                            continue;
+                        }
+
+                        let path = super::Composer::decode(capture.get(1).unwrap().as_str());
+                        let item = capture.get(2).unwrap().as_str();
+
+                        potential_implicit_imports.push((
+                            path,
+                            item,
+                            offset + capture.get(0).unwrap().range().start,
+                        ));
+                    }
+
                     let mut line_with_defs = line.to_string();
                     for capture in self.def_regex.captures_iter(line) {
                         let def = capture.get(1).unwrap();
@@ -351,6 +441,9 @@ impl Preprocessor {
                     }
                     output = true;
                 }
+
+                // track nested comments
+                block_comment_nest_count = count_block_comments(line, block_comment_nest_count);
             }
 
             if !output {
@@ -364,6 +457,48 @@ impl Preprocessor {
         }
 
         scope.finish(offset)?;
+
+        for (path, item, offset) in potential_implicit_imports.into_iter() {
+            // try to find a matching import
+            let maybe_import = imports.iter_mut().find(|import| {
+                import.definition.as_name() == path || {
+                    if import.definition.as_name.is_none()
+                        && import.definition.items.is_none()
+                        && import.definition.import.as_str().contains("::")
+                    {
+                        let short_form = import
+                            .definition
+                            .import
+                            .as_str()
+                            .rsplit_once("::")
+                            .unwrap()
+                            .1;
+                        short_form == path
+                    } else {
+                        false
+                    }
+                }
+            });
+
+            if let Some(import) = maybe_import {
+                // found matching import, make sure the item is included
+                if let Some(items) = &mut import.definition.items {
+                    if !items.iter().any(|i| i.as_str() == item) {
+                        items.push(item.to_string());
+                    }
+                }
+            } else {
+                // no import found, add it with this first use as the offset
+                imports.push(ImportDefWithOffset {
+                    definition: ImportDefinition {
+                        import: path.to_string(),
+                        as_name: Some(path.to_string()),
+                        items: Some(vec![item.to_string()]),
+                    },
+                    offset,
+                });
+            }
+        }
 
         #[cfg(debug)]
         if validate_len {
@@ -387,6 +522,9 @@ impl Preprocessor {
         let mut name = None;
         let mut offset = 0;
         let mut defines = HashMap::default();
+
+        let mut potential_implicit_imports = Vec::new();
+        let mut block_comment_nest_count = 0;
 
         for line in shader_str.lines() {
             if let Some(cap) = self.import_custom_path_as_regex.captures(line) {
@@ -446,9 +584,79 @@ impl Preprocessor {
                 } else {
                     return Err(ComposerErrorInner::DefineInModule(offset));
                 }
+            } else {
+                for capture in self.implicit_import_regex.captures_iter(line) {
+                    // regex doesn't support lookaround so we manually check this is not in a comment
+                    let match_start_index = capture.get(0).unwrap().range().start;
+                    if line[0..match_start_index].contains("//") {
+                        continue;
+                    }
+
+                    if count_block_comments(&line[0..match_start_index], block_comment_nest_count)
+                        > 0
+                    {
+                        continue;
+                    }
+
+                    let path = capture.get(1).unwrap().as_str();
+                    let item = capture.get(2).unwrap().as_str();
+
+                    potential_implicit_imports.push((
+                        path,
+                        item,
+                        offset + capture.get(0).unwrap().range().start,
+                    ));
+                }
             }
 
+            // track nested comments
+            block_comment_nest_count = count_block_comments(line, block_comment_nest_count);
+
             offset += line.len() + 1;
+        }
+
+        for (path, item, offset) in potential_implicit_imports.into_iter() {
+            // try to find a matching import
+            let maybe_import = imports.iter_mut().find(|import| {
+                import.definition.as_name() == path || {
+                    if import.definition.as_name.is_none()
+                        && import.definition.items.is_none()
+                        && import.definition.import.as_str().contains("::")
+                    {
+                        let short_form = import
+                            .definition
+                            .import
+                            .as_str()
+                            .rsplit_once("::")
+                            .unwrap()
+                            .1;
+                        short_form == path
+                    } else {
+                        false
+                    }
+                }
+            });
+
+            if let Some(import) = maybe_import {
+                // found matching import, make sure the item is included
+                if let Some(items) = &mut import.definition.items {
+                    if !items.iter().any(|i| i.as_str() == item) {
+                        items.push(item.to_string());
+                    }
+                }
+            } else {
+                // no import found, add it with this first use as the offset
+                imports.push(ImportDefWithOffset {
+                    definition: ImportDefinition {
+                        import: path.to_string(),
+                        // note: we set the as_name explicitly so that we don't leak/generate a short-form import.
+                        // explicitly using `bevy_pbr::pbr_bindings::material` should not bring `pbr_bindings` into scope
+                        as_name: Some(path.to_string()),
+                        items: Some(vec![item.to_string()]),
+                    },
+                    offset,
+                });
+            }
         }
 
         Ok((PreprocessorMetaData { name, imports }, defines))

@@ -506,24 +506,21 @@ impl Composer {
         let mut imported_items = HashMap::new();
 
         for import in import_data {
-            match import.items {
-                Some(items) => {
-                    // gather individual imported items
-                    for item in items {
-                        imported_items.insert(
-                            item.clone(),
-                            format!("{}{}", Self::decorate(import.import), item),
-                        );
-                    }
-                }
-                None => {
-                    // replace the module name directly
-                    substituted_source = substituted_source.replace(
-                        format!("{}::", import.as_name).as_str(),
-                        &Self::decorate(import.import),
+            if let Some(items) = import.items {
+                // gather individual imported items
+                for item in items {
+                    imported_items.insert(
+                        item.clone(),
+                        format!("{}{}", Self::decorate(import.import), item),
                     );
                 }
             }
+
+            // replace the module name directly
+            substituted_source = substituted_source.replace(
+                format!("{}::", import.as_name).as_str(),
+                &Self::decorate(import.import),
+            );
         }
 
         // map individually imported items
