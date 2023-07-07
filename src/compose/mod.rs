@@ -453,14 +453,20 @@ impl Composer {
                 // check for duplicates
                 if let Some(&prior) = as_names.get(import.definition.as_name()) {
                     if prior != import.definition.import.as_str() {
-                        return Err(ComposerErrorInner::DuplicateImportName { pos: import.offset, name: import.definition.as_name().to_owned() });
+                        return Err(ComposerErrorInner::DuplicateImportName {
+                            pos: import.offset,
+                            name: import.definition.as_name().to_owned(),
+                        });
                     }
                 }
-                as_names.insert(import.definition.as_name(), import.definition.import.as_str());
+                as_names.insert(
+                    import.definition.as_name(),
+                    import.definition.import.as_str(),
+                );
                 Ok(import.definition.as_import_ref())
             })
             .collect::<Result<Vec<ImportRef>, ComposerErrorInner>>()?;
-        
+
         // add short-form module name if required (`pbr_bindings` if the name is `bevy_pbr::pbr_bindings`)
         for import in imports.iter() {
             if import.definition.as_name.is_none()
@@ -476,7 +482,10 @@ impl Composer {
                     .1;
 
                 // ensure it's not already being used
-                if import_data.iter().any(|prior_import| prior_import.as_name == as_name && prior_import.import != import.definition.import ) {
+                if import_data.iter().any(|prior_import| {
+                    prior_import.as_name == as_name
+                        && prior_import.import != import.definition.import
+                }) {
                     return Err(ComposerErrorInner::DuplicateImportName {
                         pos: import.offset,
                         name: as_name.to_owned(),
