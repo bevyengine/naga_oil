@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use naga::{
-    Arena, ArraySize, Block, Constant, ConstantInner, EntryPoint, Expression, Function,
-    FunctionArgument, FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module,
+    Arena, ArraySize, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
+    FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module, Override,
     SampleLevel, Span, Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
 };
 use std::collections::HashMap;
@@ -13,11 +13,13 @@ pub struct DerivedModule<'a> {
 
     type_map: HashMap<Handle<Type>, Handle<Type>>,
     const_map: HashMap<Handle<Constant>, Handle<Constant>>,
+    const_expression_map: HashMap<Handle<Expression>, Handle<Expression>>,
     global_map: HashMap<Handle<GlobalVariable>, Handle<GlobalVariable>>,
     function_map: HashMap<String, Handle<Function>>,
 
     types: UniqueArena<Type>,
     constants: Arena<Constant>,
+    const_expressions: Arena<Expression>,
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
 }
@@ -104,7 +106,7 @@ impl<'a> DerivedModule<'a> {
                     }
                     TypeInner::Array { base, size, stride } => {
                         let size = match size {
-                            ArraySize::Constant(c) => ArraySize::Constant(self.import_const(c)),
+                            c @ ArraySize::Constant(_) => *c,
                             ArraySize::Dynamic => ArraySize::Dynamic,
                         };
                         TypeInner::Array {
@@ -115,7 +117,7 @@ impl<'a> DerivedModule<'a> {
                     }
                     TypeInner::BindingArray { base, size } => {
                         let size = match size {
-                            ArraySize::Constant(c) => ArraySize::Constant(self.import_const(c)),
+                            c @ ArraySize::Constant(_) => *c,
                             ArraySize::Dynamic => ArraySize::Dynamic,
                         };
                         TypeInner::BindingArray {
@@ -145,16 +147,14 @@ impl<'a> DerivedModule<'a> {
 
             let new_const = Constant {
                 name: c.name.clone(),
-                specialization: c.specialization,
-                inner: match &c.inner {
-                    ConstantInner::Scalar { .. } => c.inner.clone(),
-                    ConstantInner::Composite { ty, components } => {
-                        let components = components.iter().map(|c| self.import_const(c)).collect();
-                        ConstantInner::Composite {
-                            ty: self.import_type(ty),
-                            components,
-                        }
-                    }
+                r#override: c.r#override.clone(),
+                ty: self.import_type(&c.ty),
+                //TODO: infinite recursion?
+                init: if c.r#override == Override::None {
+                    self.import_const_expression(&c.init)
+                } else {
+                    // r#override doesn't do anything now
+                    unreachable!()
                 },
             };
 
@@ -183,7 +183,7 @@ impl<'a> DerivedModule<'a> {
                 space: gv.space,
                 binding: gv.binding.clone(),
                 ty: self.import_type(&gv.ty),
-                init: gv.init.map(|c| self.import_const(&c)),
+                init: gv.init.map(|c| self.import_const_expression(&c)),
             };
 
             let span = self
@@ -198,6 +198,63 @@ impl<'a> DerivedModule<'a> {
             self.global_map.insert(*h_global, new_h);
             new_h
         })
+    }
+    // remap a const expression from source context into our derived context
+    pub fn import_const_expression(
+        &mut self,
+        const_expression_handle: &Handle<Expression>,
+    ) -> Handle<Expression> {
+        self.const_expression_map
+            .get(const_expression_handle)
+            .copied()
+            .unwrap_or_else(|| {
+                let old_c = self
+                    .shader
+                    .as_ref()
+                    .unwrap()
+                    .const_expressions
+                    .try_get(*const_expression_handle)
+                    .unwrap();
+
+                let new_const = match old_c {
+                    Expression::Constant(h_c) => {
+                        let c = self
+                            .shader
+                            .as_ref()
+                            .unwrap()
+                            .constants
+                            .try_get(*h_c)
+                            .unwrap();
+
+                        Constant {
+                            name: c.name.clone(),
+                            r#override: c.r#override.clone(),
+                            ty: self.import_type(&c.ty),
+                            init: self.import_const_expression(&c.init),
+                        }
+                    }
+                    // TODO
+                    // What should I do?
+                    _ => todo!(),
+                };
+
+                let span = self
+                    .shader
+                    .as_ref()
+                    .unwrap()
+                    .const_expressions
+                    .get_span(*const_expression_handle);
+                let new_constant_handle = self
+                    .constants
+                    .fetch_or_append(new_const, self.map_span(span));
+                let new_const_expression = naga::Expression::Constant(new_constant_handle);
+                let new_const_expression_handle = self
+                    .const_expressions
+                    .append(new_const_expression, self.map_span(span));
+                self.const_expression_map
+                    .insert(*const_expression_handle, new_const_expression_handle);
+                new_const_expression_handle
+            })
     }
 
     // remap a block
@@ -325,6 +382,12 @@ impl<'a> DerivedModule<'a> {
                         value: map_expr!(value),
                         result: map_expr!(result),
                     },
+                    Statement::WorkGroupUniformLoad { pointer, result } => {
+                        Statement::WorkGroupUniformLoad {
+                            pointer: map_expr!(pointer),
+                            result: map_expr!(result),
+                        }
+                    }
                     Statement::Return { value } => Statement::Return {
                         value: map_expr_opt!(value),
                     },
@@ -406,6 +469,8 @@ impl<'a> DerivedModule<'a> {
         let mut is_external = false;
         let expr = old_expressions.try_get(h_expr).unwrap();
         let expr = match expr {
+            Expression::Literal(_) => expr.clone(),
+            Expression::ZeroValue(zv) => Expression::ZeroValue(self.import_type(zv)),
             Expression::CallResult(f) => Expression::CallResult(self.map_function_handle(f)),
             Expression::Constant(c) => {
                 is_external = true;
@@ -434,7 +499,7 @@ impl<'a> DerivedModule<'a> {
                 gather: *gather,
                 coordinate: map_expr!(coordinate),
                 array_index: map_expr_opt!(array_index),
-                offset: offset.map(|c| self.import_const(&c)),
+                offset: offset.map(|c| self.import_const_expression(&c)),
                 level: match level {
                     SampleLevel::Auto | SampleLevel::Zero => *level,
                     SampleLevel::Exact(expr) => SampleLevel::Exact(map_expr!(expr)),
@@ -549,6 +614,7 @@ impl<'a> DerivedModule<'a> {
             }
 
             Expression::AtomicResult { .. } => expr.clone(),
+            Expression::WorkGroupUniformLoadResult { .. } => expr.clone(),
             Expression::RayQueryProceedResult => expr.clone(),
             Expression::RayQueryGetIntersection { query, committed } => {
                 Expression::RayQueryGetIntersection {
@@ -591,7 +657,7 @@ impl<'a> DerivedModule<'a> {
             let new_local = LocalVariable {
                 name: l.name.clone(),
                 ty: self.import_type(&l.ty),
-                init: l.init.map(|c| self.import_const(&c)),
+                init: l.init.map(|c| self.import_const_expression(&c)),
             };
             let span = func.local_variables.get_span(h_l);
             let new_h = local_variables.append(new_local, self.map_span(span));
@@ -688,6 +754,7 @@ impl<'a> From<DerivedModule<'a>> for naga::Module {
             types: derived.types,
             constants: derived.constants,
             global_variables: derived.globals,
+            const_expressions: derived.const_expressions,
             functions: derived.functions,
             special_types: Default::default(),
             entry_points: Default::default(),
