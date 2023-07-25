@@ -104,17 +104,11 @@ impl<'a> DerivedModule<'a> {
                             span: *span,
                         }
                     }
-                    TypeInner::Array { base, size, stride } => {
-                        let size = match size {
-                            c @ ArraySize::Constant(_) => *c,
-                            ArraySize::Dynamic => ArraySize::Dynamic,
-                        };
-                        TypeInner::Array {
-                            base: self.import_type(base),
-                            size,
-                            stride: *stride,
-                        }
-                    }
+                    TypeInner::Array { base, size, stride } => TypeInner::Array {
+                        base: self.import_type(base),
+                        size: *size,
+                        stride: *stride,
+                    },
                     TypeInner::BindingArray { base, size } => {
                         let size = match size {
                             c @ ArraySize::Constant(_) => *c,
@@ -149,7 +143,7 @@ impl<'a> DerivedModule<'a> {
                 name: c.name.clone(),
                 r#override: c.r#override.clone(),
                 ty: self.import_type(&c.ty),
-                //TODO: infinite recursion?
+                // TODO: infinite recursion?
                 init: if c.r#override == Override::None {
                     self.import_const_expression(&c.init)
                 } else {
