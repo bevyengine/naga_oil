@@ -476,7 +476,7 @@ impl Preprocessor {
                 let def = cap.get(2).unwrap();
                 effective_defs.insert(def.as_str().to_owned());
             }
-            if let Some(cap) = self.ifop_regex.captures(line) {
+            if let Some(cap) = self.ifop_regex.captures(&line) {
                 let def = cap.get(2).unwrap();
                 effective_defs.insert(def.as_str().to_owned());
             }
