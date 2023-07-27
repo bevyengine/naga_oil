@@ -1,9 +1,10 @@
 use indexmap::IndexMap;
 use naga::{
-    Arena, ArraySize, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
-    FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module, Override,
-    SampleLevel, Span, Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
+    Arena, Block, Constant, EntryPoint, Expression, Function, FunctionArgument, FunctionResult,
+    GlobalVariable, Handle, ImageQuery, LocalVariable, Module, SampleLevel, Span, Statement,
+    StructMember, SwitchCase, Type, TypeInner, UniqueArena,
 };
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
@@ -11,17 +12,17 @@ pub struct DerivedModule<'a> {
     shader: Option<&'a Module>,
     span_offset: usize,
 
-    type_map: HashMap<Handle<Type>, Handle<Type>>,
-    const_map: HashMap<Handle<Constant>, Handle<Constant>>,
-    const_expression_map: HashMap<Handle<Expression>, Handle<Expression>>,
-    global_map: HashMap<Handle<GlobalVariable>, Handle<GlobalVariable>>,
-    function_map: HashMap<String, Handle<Function>>,
+    type_map: RefCell<HashMap<Handle<Type>, Handle<Type>>>,
+    const_map: RefCell<HashMap<Handle<Constant>, Handle<Constant>>>,
+    const_expression_map: RefCell<HashMap<Handle<Expression>, Handle<Expression>>>,
+    global_map: RefCell<HashMap<Handle<GlobalVariable>, Handle<GlobalVariable>>>,
+    function_map: RefCell<HashMap<String, Handle<Function>>>,
 
-    types: UniqueArena<Type>,
-    constants: Arena<Constant>,
-    const_expressions: Arena<Expression>,
-    globals: Arena<GlobalVariable>,
-    functions: Arena<Function>,
+    types: RefCell<UniqueArena<Type>>,
+    constants: RefCell<Arena<Constant>>,
+    const_expressions: RefCell<Arena<Expression>>,
+    globals: RefCell<Arena<GlobalVariable>>,
+    functions: RefCell<Arena<Function>>,
 }
 
 impl<'a> DerivedModule<'a> {
@@ -35,9 +36,10 @@ impl<'a> DerivedModule<'a> {
     // detach source context
     pub fn clear_shader_source(&mut self) {
         self.shader = None;
-        self.type_map.clear();
-        self.const_map.clear();
-        self.global_map.clear();
+        self.type_map.borrow_mut().clear();
+        self.const_map.borrow_mut().clear();
+        self.const_expression_map.borrow_mut().clear();
+        self.global_map.borrow_mut().clear();
     }
 
     pub fn map_span(&self, span: Span) -> Span {
@@ -52,212 +54,174 @@ impl<'a> DerivedModule<'a> {
     }
 
     // remap a type from source context into our derived context
-    pub fn import_type(&mut self, h_type: &Handle<Type>) -> Handle<Type> {
+    pub fn import_type(&self, h_type: &Handle<Type>) -> Handle<Type> {
         self.rename_type(h_type, None)
     }
 
     // remap a type from source context into our derived context, and rename it
-    pub fn rename_type(&mut self, h_type: &Handle<Type>, name: Option<String>) -> Handle<Type> {
-        self.type_map.get(h_type).copied().unwrap_or_else(|| {
-            let ty = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .types
-                .get_handle(*h_type)
-                .unwrap();
-
-            let name = match name {
-                Some(name) => Some(name),
-                None => ty.name.clone(),
-            };
-
-            let new_type = Type {
-                name,
-                inner: match &ty.inner {
-                    TypeInner::Scalar { .. }
-                    | TypeInner::Vector { .. }
-                    | TypeInner::Matrix { .. }
-                    | TypeInner::ValuePointer { .. }
-                    | TypeInner::Image { .. }
-                    | TypeInner::Sampler { .. }
-                    | TypeInner::Atomic { .. }
-                    | TypeInner::AccelerationStructure
-                    | TypeInner::RayQuery => ty.inner.clone(),
-
-                    TypeInner::Pointer { base, space } => TypeInner::Pointer {
-                        base: self.import_type(base),
-                        space: *space,
-                    },
-                    TypeInner::Struct { members, span } => {
-                        let members = members
-                            .iter()
-                            .map(|m| StructMember {
-                                name: m.name.clone(),
-                                ty: self.import_type(&m.ty),
-                                binding: m.binding.clone(),
-                                offset: m.offset,
-                            })
-                            .collect();
-                        TypeInner::Struct {
-                            members,
-                            span: *span,
-                        }
-                    }
-                    TypeInner::Array { base, size, stride } => TypeInner::Array {
-                        base: self.import_type(base),
-                        size: *size,
-                        stride: *stride,
-                    },
-                    TypeInner::BindingArray { base, size } => {
-                        let size = match size {
-                            c @ ArraySize::Constant(_) => *c,
-                            ArraySize::Dynamic => ArraySize::Dynamic,
-                        };
-                        TypeInner::BindingArray {
-                            base: self.import_type(base),
-                            size,
-                        }
-                    }
-                },
-            };
-            let span = self.shader.as_ref().unwrap().types.get_span(*h_type);
-            let new_h = self.types.insert(new_type, self.map_span(span));
-            self.type_map.insert(*h_type, new_h);
-            new_h
-        })
-    }
-
-    // remap a const from source context into our derived context
-    pub fn import_const(&mut self, h_const: &Handle<Constant>) -> Handle<Constant> {
-        self.const_map.get(h_const).copied().unwrap_or_else(|| {
-            let c = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .constants
-                .try_get(*h_const)
-                .unwrap();
-
-            let new_const = Constant {
-                name: c.name.clone(),
-                r#override: c.r#override.clone(),
-                ty: self.import_type(&c.ty),
-                // TODO: infinite recursion?
-                init: if c.r#override == Override::None {
-                    self.import_const_expression(&c.init)
-                } else {
-                    // r#override doesn't do anything now
-                    unreachable!()
-                },
-            };
-
-            let span = self.shader.as_ref().unwrap().constants.get_span(*h_const);
-            let new_h = self
-                .constants
-                .fetch_or_append(new_const, self.map_span(span));
-            self.const_map.insert(*h_const, new_h);
-            new_h
-        })
-    }
-
-    // remap a global from source context into our derived context
-    pub fn import_global(&mut self, h_global: &Handle<GlobalVariable>) -> Handle<GlobalVariable> {
-        self.global_map.get(h_global).copied().unwrap_or_else(|| {
-            let gv = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .global_variables
-                .try_get(*h_global)
-                .unwrap();
-
-            let new_global = GlobalVariable {
-                name: gv.name.clone(),
-                space: gv.space,
-                binding: gv.binding.clone(),
-                ty: self.import_type(&gv.ty),
-                init: gv.init.map(|c| self.import_const_expression(&c)),
-            };
-
-            let span = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .global_variables
-                .get_span(*h_global);
-            let new_h = self
-                .globals
-                .fetch_or_append(new_global, self.map_span(span));
-            self.global_map.insert(*h_global, new_h);
-            new_h
-        })
-    }
-    // remap a const expression from source context into our derived context
-    pub fn import_const_expression(
-        &mut self,
-        const_expression_handle: &Handle<Expression>,
-    ) -> Handle<Expression> {
-        self.const_expression_map
-            .get(const_expression_handle)
+    pub fn rename_type(&self, h_type: &Handle<Type>, name: Option<String>) -> Handle<Type> {
+        self.type_map
+            .borrow()
+            .get(h_type)
             .copied()
             .unwrap_or_else(|| {
-                let old_c = self
+                let ty = self
                     .shader
                     .as_ref()
                     .unwrap()
-                    .const_expressions
-                    .try_get(*const_expression_handle)
+                    .types
+                    .get_handle(*h_type)
                     .unwrap();
 
-                let new_const = match old_c {
-                    Expression::Constant(h_c) => {
-                        let c = self
-                            .shader
-                            .as_ref()
-                            .unwrap()
-                            .constants
-                            .try_get(*h_c)
-                            .unwrap();
+                let name = match name {
+                    Some(name) => Some(name),
+                    None => ty.name.clone(),
+                };
 
-                        Constant {
-                            name: c.name.clone(),
-                            r#override: c.r#override.clone(),
-                            ty: self.import_type(&c.ty),
-                            init: self.import_const_expression(&c.init),
+                let new_type = Type {
+                    name,
+                    inner: match &ty.inner {
+                        TypeInner::Scalar { .. }
+                        | TypeInner::Vector { .. }
+                        | TypeInner::Matrix { .. }
+                        | TypeInner::ValuePointer { .. }
+                        | TypeInner::Image { .. }
+                        | TypeInner::Sampler { .. }
+                        | TypeInner::Atomic { .. }
+                        | TypeInner::AccelerationStructure
+                        | TypeInner::RayQuery => ty.inner.clone(),
+
+                        TypeInner::Pointer { base, space } => TypeInner::Pointer {
+                            base: self.import_type(base),
+                            space: *space,
+                        },
+                        TypeInner::Struct { members, span } => {
+                            let members = members
+                                .iter()
+                                .map(|m| StructMember {
+                                    name: m.name.clone(),
+                                    ty: self.import_type(&m.ty),
+                                    binding: m.binding.clone(),
+                                    offset: m.offset,
+                                })
+                                .collect();
+                            TypeInner::Struct {
+                                members,
+                                span: *span,
+                            }
                         }
-                    }
-                    // TODO
-                    // What should I do?
-                    _ => todo!(),
+                        TypeInner::Array { base, size, stride } => TypeInner::Array {
+                            base: self.import_type(base),
+                            size: *size,
+                            stride: *stride,
+                        },
+                        TypeInner::BindingArray { base, size } => TypeInner::BindingArray {
+                            base: self.import_type(base),
+                            size: *size,
+                        },
+                    },
+                };
+                let span = self.shader.as_ref().unwrap().types.get_span(*h_type);
+                let new_h = self
+                    .types
+                    .borrow_mut()
+                    .insert(new_type, self.map_span(span));
+                self.type_map.borrow_mut().insert(*h_type, new_h);
+                new_h
+            })
+    }
+
+    // remap a const from source context into our derived context
+    pub fn import_const(&self, h_const: &Handle<Constant>) -> Handle<Constant> {
+        self.const_map
+            .borrow()
+            .get(h_const)
+            .copied()
+            .unwrap_or_else(|| {
+                let c = self
+                    .shader
+                    .as_ref()
+                    .unwrap()
+                    .constants
+                    .try_get(*h_const)
+                    .unwrap();
+
+                let new_const = Constant {
+                    name: c.name.clone(),
+                    r#override: c.r#override.clone(),
+                    ty: self.import_type(&c.ty),
+                    init: self.import_expression(
+                        c.init,
+                        self.shader.map_or(&Arena::new(), |s| &s.const_expressions),
+                        &self.const_expression_map,
+                        &self.const_expressions,
+                        false,
+                    ),
+                };
+
+                let span = self.shader.as_ref().unwrap().constants.get_span(*h_const);
+                let new_h = self
+                    .constants
+                    .borrow_mut()
+                    .fetch_or_append(new_const, self.map_span(span));
+                self.const_map.borrow_mut().insert(*h_const, new_h);
+                new_h
+            })
+    }
+
+    // remap a global from source context into our derived context
+    pub fn import_global(&self, h_global: &Handle<GlobalVariable>) -> Handle<GlobalVariable> {
+        self.global_map
+            .borrow()
+            .get(h_global)
+            .copied()
+            .unwrap_or_else(|| {
+                let gv = self
+                    .shader
+                    .as_ref()
+                    .unwrap()
+                    .global_variables
+                    .try_get(*h_global)
+                    .unwrap();
+
+                let new_global = GlobalVariable {
+                    name: gv.name.clone(),
+                    space: gv.space,
+                    binding: gv.binding.clone(),
+                    ty: self.import_type(&gv.ty),
+                    init: gv.init.map(|c| {
+                        self.import_expression(
+                            c,
+                            self.shader.map_or(&Arena::new(), |s| &s.const_expressions),
+                            &self.const_expression_map,
+                            &self.const_expressions,
+                            false,
+                        )
+                    }),
                 };
 
                 let span = self
                     .shader
                     .as_ref()
                     .unwrap()
-                    .const_expressions
-                    .get_span(*const_expression_handle);
-                let new_constant_handle = self
-                    .constants
-                    .fetch_or_append(new_const, self.map_span(span));
-                let new_const_expression = naga::Expression::Constant(new_constant_handle);
-                let new_const_expression_handle = self
-                    .const_expressions
-                    .append(new_const_expression, self.map_span(span));
-                self.const_expression_map
-                    .insert(*const_expression_handle, new_const_expression_handle);
-                new_const_expression_handle
+                    .global_variables
+                    .get_span(*h_global);
+                let new_h = self
+                    .globals
+                    .borrow_mut()
+                    .fetch_or_append(new_global, self.map_span(span));
+                self.global_map.borrow_mut().insert(*h_global, new_h);
+                new_h
             })
     }
 
     // remap a block
     fn import_block(
-        &mut self,
+        &self,
         block: &Block,
         old_expressions: &Arena<Expression>,
-        already_imported: &mut HashMap<Handle<Expression>, Handle<Expression>>,
-        new_expressions: &mut Arena<Expression>,
+        already_imported: &RefCell<HashMap<Handle<Expression>, Handle<Expression>>>,
+        new_expressions: &RefCell<Arena<Expression>>,
     ) -> Block {
         macro_rules! map_expr {
             ($e:expr) => {
@@ -342,13 +306,13 @@ impl<'a> DerivedModule<'a> {
                                 true,
                             );
                         }
-                        let old_length = new_expressions.len();
+                        let old_length = new_expressions.borrow().len();
                         // iterate again to add expressions that should be part of the emit statement
                         for expr in exprs.clone() {
                             map_expr!(&expr);
                         }
 
-                        Statement::Emit(new_expressions.range_from(old_length))
+                        Statement::Emit(new_expressions.borrow().range_from(old_length))
                     }
                     Statement::Store { pointer, value } => Statement::Store {
                         pointer: map_expr!(pointer),
@@ -423,14 +387,14 @@ impl<'a> DerivedModule<'a> {
     }
 
     fn import_expression(
-        &mut self,
+        &self,
         h_expr: Handle<Expression>,
         old_expressions: &Arena<Expression>,
-        already_imported: &mut HashMap<Handle<Expression>, Handle<Expression>>,
-        new_expressions: &mut Arena<Expression>,
+        already_imported: &RefCell<HashMap<Handle<Expression>, Handle<Expression>>>,
+        new_expressions: &RefCell<Arena<Expression>>,
         non_emitting_only: bool, // only brings items that should NOT be emitted into scope
     ) -> Handle<Expression> {
-        if let Some(h_new) = already_imported.get(&h_expr) {
+        if let Some(h_new) = already_imported.borrow().get(&h_expr) {
             return *h_new;
         }
 
@@ -493,7 +457,15 @@ impl<'a> DerivedModule<'a> {
                 gather: *gather,
                 coordinate: map_expr!(coordinate),
                 array_index: map_expr_opt!(array_index),
-                offset: offset.map(|c| self.import_const_expression(&c)),
+                offset: offset.map(|c| {
+                    self.import_expression(
+                        c,
+                        self.shader.map_or(&Arena::new(), |s| &s.const_expressions),
+                        &self.const_expression_map,
+                        &self.const_expressions,
+                        false,
+                    )
+                }),
                 level: match level {
                     SampleLevel::Auto | SampleLevel::Zero => *level,
                     SampleLevel::Exact(expr) => SampleLevel::Exact(map_expr!(expr)),
@@ -620,9 +592,11 @@ impl<'a> DerivedModule<'a> {
 
         if !non_emitting_only || is_external {
             let span = old_expressions.get_span(h_expr);
-            let h_new = new_expressions.append(expr, self.map_span(span));
+            let h_new = new_expressions
+                .borrow_mut()
+                .append(expr, self.map_span(span));
 
-            already_imported.insert(h_expr, h_new);
+            already_imported.borrow_mut().insert(h_expr, h_new);
             h_new
         } else {
             h_expr
@@ -630,7 +604,7 @@ impl<'a> DerivedModule<'a> {
     }
 
     // remap function global references (global vars, consts, types) into our derived context
-    pub fn localize_function(&mut self, func: &Function) -> Function {
+    pub fn localize_function(&self, func: &Function) -> Function {
         let arguments = func
             .arguments
             .iter()
@@ -651,35 +625,43 @@ impl<'a> DerivedModule<'a> {
             let new_local = LocalVariable {
                 name: l.name.clone(),
                 ty: self.import_type(&l.ty),
-                init: l.init.map(|c| self.import_const_expression(&c)),
+                init: l.init.map(|c| {
+                    self.import_expression(
+                        c,
+                        self.shader.map_or(&Arena::new(), |s| &s.const_expressions),
+                        &self.const_expression_map,
+                        &self.const_expressions,
+                        false,
+                    )
+                }),
             };
             let span = func.local_variables.get_span(h_l);
             let new_h = local_variables.append(new_local, self.map_span(span));
             assert_eq!(h_l, new_h);
         }
 
-        let mut expressions = Arena::new();
-        let mut expr_map = HashMap::new();
+        let expressions = RefCell::new(Arena::new());
+        let expr_map = RefCell::new(HashMap::new());
 
-        let body = self.import_block(
-            &func.body,
-            &func.expressions,
-            &mut expr_map,
-            &mut expressions,
-        );
+        let body = self.import_block(&func.body, &func.expressions, &expr_map, &expressions);
 
         let named_expressions = func
             .named_expressions
             .iter()
-            .flat_map(|(h_expr, name)| expr_map.get(h_expr).map(|new_h| (*new_h, name.clone())))
+            .flat_map(|(h_expr, name)| {
+                expr_map
+                    .borrow_mut()
+                    .get(h_expr)
+                    .map(|new_h| (*new_h, name.clone()))
+            })
             .collect::<IndexMap<_, _, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>>();
 
         Function {
             name: func.name.clone(),
+            expressions: expressions.into_inner(),
             arguments,
             result,
             local_variables,
-            expressions,
             named_expressions,
             body,
         }
@@ -688,39 +670,43 @@ impl<'a> DerivedModule<'a> {
     // import a function defined in the source shader context.
     // func name may be already defined, the returned handle will refer to the new function.
     // the previously defined function will still be valid.
-    pub fn import_function(&mut self, func: &Function, span: Span) -> Handle<Function> {
+    pub fn import_function(&self, func: &Function, span: Span) -> Handle<Function> {
         let name = func.name.as_ref().unwrap().clone();
         let mapped_func = self.localize_function(func);
         let new_span = self.map_span(span);
-        let new_h = self.functions.append(mapped_func, new_span);
-        self.function_map.insert(name, new_h);
+        let new_h = self.functions.borrow_mut().append(mapped_func, new_span);
+        self.function_map.borrow_mut().insert(name, new_h);
         new_h
     }
 
     // get the derived handle corresponding to the given source function handle
     // requires func to be named
-    pub fn map_function_handle(&mut self, h_func: &Handle<Function>) -> Handle<Function> {
+    pub fn map_function_handle(&self, h_func: &Handle<Function>) -> Handle<Function> {
         let functions = &self.shader.as_ref().unwrap().functions;
         let func = functions.try_get(*h_func).unwrap();
         let name = func.name.as_ref().unwrap();
-        self.function_map.get(name).copied().unwrap_or_else(|| {
-            let span = functions.get_span(*h_func);
-            self.import_function(func, span)
-        })
+        self.function_map
+            .borrow()
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| {
+                let span = functions.get_span(*h_func);
+                self.import_function(func, span)
+            })
     }
 
     /// swap an already imported function for a new one.
     /// note span cannot be updated
-    pub fn import_function_if_new(&mut self, func: &Function, span: Span) -> Handle<Function> {
+    pub fn import_function_if_new(&self, func: &Function, span: Span) -> Handle<Function> {
         let name = func.name.as_ref().unwrap().clone();
-        if let Some(h) = self.function_map.get(&name) {
+        if let Some(h) = self.function_map.borrow().get(&name) {
             return *h;
         }
 
         self.import_function(func, span)
     }
 
-    pub fn into_module_with_entrypoints(mut self) -> naga::Module {
+    pub fn into_module_with_entrypoints(self) -> naga::Module {
         let entry_points = self
             .shader
             .unwrap()
@@ -745,11 +731,11 @@ impl<'a> DerivedModule<'a> {
 impl<'a> From<DerivedModule<'a>> for naga::Module {
     fn from(derived: DerivedModule) -> Self {
         naga::Module {
-            types: derived.types,
-            constants: derived.constants,
-            global_variables: derived.globals,
-            const_expressions: derived.const_expressions,
-            functions: derived.functions,
+            types: derived.types.into_inner(),
+            constants: derived.constants.into_inner(),
+            global_variables: derived.globals.into_inner(),
+            const_expressions: derived.const_expressions.into_inner(),
+            functions: derived.functions.into_inner(),
             special_types: Default::default(),
             entry_points: Default::default(),
         }
