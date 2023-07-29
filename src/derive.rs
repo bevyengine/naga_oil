@@ -1,10 +1,12 @@
 use indexmap::IndexMap;
 use naga::{
     Arena, ArraySize, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
-    FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module, Override,
-    SampleLevel, Span, Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
+    FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module, SampleLevel, Span,
+    Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
 };
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+
+use crate::compose::util::expression_eq;
 
 #[derive(Debug, Default)]
 pub struct DerivedModule<'a> {
@@ -13,13 +15,13 @@ pub struct DerivedModule<'a> {
 
     type_map: HashMap<Handle<Type>, Handle<Type>>,
     const_map: HashMap<Handle<Constant>, Handle<Constant>>,
-    const_expression_map: HashMap<Handle<Expression>, Handle<Expression>>,
+    const_expression_map: Rc<RefCell<HashMap<Handle<Expression>, Handle<Expression>>>>,
     global_map: HashMap<Handle<GlobalVariable>, Handle<GlobalVariable>>,
     function_map: HashMap<String, Handle<Function>>,
 
     types: UniqueArena<Type>,
     constants: Arena<Constant>,
-    const_expressions: Arena<Expression>,
+    const_expressions: Rc<RefCell<Arena<Expression>>>,
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
 }
@@ -38,6 +40,7 @@ impl<'a> DerivedModule<'a> {
         self.type_map.clear();
         self.const_map.clear();
         self.global_map.clear();
+        self.const_expression_map.borrow_mut().clear();
     }
 
     pub fn map_span(&self, span: Span) -> Span {
@@ -143,13 +146,7 @@ impl<'a> DerivedModule<'a> {
                 name: c.name.clone(),
                 r#override: c.r#override.clone(),
                 ty: self.import_type(&c.ty),
-                // TODO: infinite recursion?
-                init: if c.r#override == Override::None {
-                    self.import_const_expression(&c.init)
-                } else {
-                    // r#override doesn't do anything now
-                    unreachable!()
-                },
+                init: self.import_const_expression(c.init),
             };
 
             let span = self.shader.as_ref().unwrap().constants.get_span(*h_const);
@@ -177,7 +174,7 @@ impl<'a> DerivedModule<'a> {
                 space: gv.space,
                 binding: gv.binding.clone(),
                 ty: self.import_type(&gv.ty),
-                init: gv.init.map(|c| self.import_const_expression(&c)),
+                init: gv.init.map(|c| self.import_const_expression(c)),
             };
 
             let span = self
@@ -194,61 +191,15 @@ impl<'a> DerivedModule<'a> {
         })
     }
     // remap a const expression from source context into our derived context
-    pub fn import_const_expression(
-        &mut self,
-        const_expression_handle: &Handle<Expression>,
-    ) -> Handle<Expression> {
-        self.const_expression_map
-            .get(const_expression_handle)
-            .copied()
-            .unwrap_or_else(|| {
-                let old_c = self
-                    .shader
-                    .as_ref()
-                    .unwrap()
-                    .const_expressions
-                    .try_get(*const_expression_handle)
-                    .unwrap();
-
-                let new_const = match old_c {
-                    Expression::Constant(h_c) => {
-                        let c = self
-                            .shader
-                            .as_ref()
-                            .unwrap()
-                            .constants
-                            .try_get(*h_c)
-                            .unwrap();
-
-                        Constant {
-                            name: c.name.clone(),
-                            r#override: c.r#override.clone(),
-                            ty: self.import_type(&c.ty),
-                            init: self.import_const_expression(&c.init),
-                        }
-                    }
-                    // TODO
-                    // What should I do?
-                    _ => todo!(),
-                };
-
-                let span = self
-                    .shader
-                    .as_ref()
-                    .unwrap()
-                    .const_expressions
-                    .get_span(*const_expression_handle);
-                let new_constant_handle = self
-                    .constants
-                    .fetch_or_append(new_const, self.map_span(span));
-                let new_const_expression = naga::Expression::Constant(new_constant_handle);
-                let new_const_expression_handle = self
-                    .const_expressions
-                    .append(new_const_expression, self.map_span(span));
-                self.const_expression_map
-                    .insert(*const_expression_handle, new_const_expression_handle);
-                new_const_expression_handle
-            })
+    pub fn import_const_expression(&mut self, h_cexpr: Handle<Expression>) -> Handle<Expression> {
+        self.import_expression(
+            h_cexpr,
+            &self.shader.as_ref().unwrap().const_expressions,
+            self.const_expression_map.clone(),
+            self.const_expressions.clone(),
+            false,
+            true,
+        )
     }
 
     // remap a block
@@ -256,16 +207,17 @@ impl<'a> DerivedModule<'a> {
         &mut self,
         block: &Block,
         old_expressions: &Arena<Expression>,
-        already_imported: &mut HashMap<Handle<Expression>, Handle<Expression>>,
-        new_expressions: &mut Arena<Expression>,
+        already_imported: Rc<RefCell<HashMap<Handle<Expression>, Handle<Expression>>>>,
+        new_expressions: Rc<RefCell<Arena<Expression>>>,
     ) -> Block {
         macro_rules! map_expr {
             ($e:expr) => {
                 self.import_expression(
                     *$e,
                     old_expressions,
-                    already_imported,
-                    new_expressions,
+                    already_imported.clone(),
+                    new_expressions.clone(),
+                    false,
                     false,
                 )
             };
@@ -279,7 +231,12 @@ impl<'a> DerivedModule<'a> {
 
         macro_rules! map_block {
             ($b:expr) => {
-                self.import_block($b, old_expressions, already_imported, new_expressions)
+                self.import_block(
+                    $b,
+                    old_expressions,
+                    already_imported.clone(),
+                    new_expressions.clone(),
+                )
             };
         }
 
@@ -337,18 +294,19 @@ impl<'a> DerivedModule<'a> {
                             self.import_expression(
                                 expr,
                                 old_expressions,
-                                already_imported,
-                                new_expressions,
+                                already_imported.clone(),
+                                new_expressions.clone(),
                                 true,
+                                false,
                             );
                         }
-                        let old_length = new_expressions.len();
+                        let old_length = new_expressions.borrow().len();
                         // iterate again to add expressions that should be part of the emit statement
                         for expr in exprs.clone() {
                             map_expr!(&expr);
                         }
 
-                        Statement::Emit(new_expressions.range_from(old_length))
+                        Statement::Emit(new_expressions.borrow().range_from(old_length))
                     }
                     Statement::Store { pointer, value } => Statement::Store {
                         pointer: map_expr!(pointer),
@@ -426,11 +384,12 @@ impl<'a> DerivedModule<'a> {
         &mut self,
         h_expr: Handle<Expression>,
         old_expressions: &Arena<Expression>,
-        already_imported: &mut HashMap<Handle<Expression>, Handle<Expression>>,
-        new_expressions: &mut Arena<Expression>,
+        already_imported: Rc<RefCell<HashMap<Handle<Expression>, Handle<Expression>>>>,
+        new_expressions: Rc<RefCell<Arena<Expression>>>,
         non_emitting_only: bool, // only brings items that should NOT be emitted into scope
+        unique: bool, // ensure expressions are unique with custom comparison
     ) -> Handle<Expression> {
-        if let Some(h_new) = already_imported.get(&h_expr) {
+        if let Some(h_new) = already_imported.borrow().get(&h_expr) {
             return *h_new;
         }
 
@@ -439,9 +398,10 @@ impl<'a> DerivedModule<'a> {
                 self.import_expression(
                     *$e,
                     old_expressions,
-                    already_imported,
-                    new_expressions,
+                    already_imported.clone(),
+                    new_expressions.clone(),
                     non_emitting_only,
+                    unique,
                 )
             };
         }
@@ -452,9 +412,10 @@ impl<'a> DerivedModule<'a> {
                     self.import_expression(
                         *expr,
                         old_expressions,
-                        already_imported,
-                        new_expressions,
+                        already_imported.clone(),
+                        new_expressions.clone(),
                         non_emitting_only,
+                        unique,
                     )
                 })
             };
@@ -463,8 +424,14 @@ impl<'a> DerivedModule<'a> {
         let mut is_external = false;
         let expr = old_expressions.try_get(h_expr).unwrap();
         let expr = match expr {
-            Expression::Literal(_) => expr.clone(),
-            Expression::ZeroValue(zv) => Expression::ZeroValue(self.import_type(zv)),
+            Expression::Literal(_) => {
+                is_external = true;
+                expr.clone()
+            }
+            Expression::ZeroValue(zv) => {
+                is_external = true;
+                Expression::ZeroValue(self.import_type(zv))
+            }
             Expression::CallResult(f) => Expression::CallResult(self.map_function_handle(f)),
             Expression::Constant(c) => {
                 is_external = true;
@@ -493,7 +460,7 @@ impl<'a> DerivedModule<'a> {
                 gather: *gather,
                 coordinate: map_expr!(coordinate),
                 array_index: map_expr_opt!(array_index),
-                offset: offset.map(|c| self.import_const_expression(&c)),
+                offset: offset.map(|c| self.import_const_expression(c)),
                 level: match level {
                     SampleLevel::Auto | SampleLevel::Zero => *level,
                     SampleLevel::Exact(expr) => SampleLevel::Exact(map_expr!(expr)),
@@ -620,9 +587,20 @@ impl<'a> DerivedModule<'a> {
 
         if !non_emitting_only || is_external {
             let span = old_expressions.get_span(h_expr);
-            let h_new = new_expressions.append(expr, self.map_span(span));
+            let h_new = if unique {
+                new_expressions.borrow_mut().fetch_if_or_append(
+                    expr,
+                    self.map_span(span),
+                    expression_eq,
+                )    
+            } else {
+                new_expressions.borrow_mut().append(
+                    expr,
+                    self.map_span(span),
+                )
+            };
 
-            already_imported.insert(h_expr, h_new);
+            already_imported.borrow_mut().insert(h_expr, h_new);
             h_new
         } else {
             h_expr
@@ -651,27 +629,32 @@ impl<'a> DerivedModule<'a> {
             let new_local = LocalVariable {
                 name: l.name.clone(),
                 ty: self.import_type(&l.ty),
-                init: l.init.map(|c| self.import_const_expression(&c)),
+                init: l.init.map(|c| self.import_const_expression(c)),
             };
             let span = func.local_variables.get_span(h_l);
             let new_h = local_variables.append(new_local, self.map_span(span));
             assert_eq!(h_l, new_h);
         }
 
-        let mut expressions = Arena::new();
-        let mut expr_map = HashMap::new();
+        let expressions = Rc::new(RefCell::new(Arena::new()));
+        let expr_map = Rc::new(RefCell::new(HashMap::new()));
 
         let body = self.import_block(
             &func.body,
             &func.expressions,
-            &mut expr_map,
-            &mut expressions,
+            expr_map.clone(),
+            expressions.clone(),
         );
 
         let named_expressions = func
             .named_expressions
             .iter()
-            .flat_map(|(h_expr, name)| expr_map.get(h_expr).map(|new_h| (*new_h, name.clone())))
+            .flat_map(|(h_expr, name)| {
+                expr_map
+                    .borrow()
+                    .get(h_expr)
+                    .map(|new_h| (*new_h, name.clone()))
+            })
             .collect::<IndexMap<_, _, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>>();
 
         Function {
@@ -679,7 +662,7 @@ impl<'a> DerivedModule<'a> {
             arguments,
             result,
             local_variables,
-            expressions,
+            expressions: Rc::try_unwrap(expressions).unwrap().into_inner(),
             named_expressions,
             body,
         }
@@ -748,7 +731,9 @@ impl<'a> From<DerivedModule<'a>> for naga::Module {
             types: derived.types,
             constants: derived.constants,
             global_variables: derived.globals,
-            const_expressions: derived.const_expressions,
+            const_expressions: Rc::try_unwrap(derived.const_expressions)
+                .unwrap()
+                .into_inner(),
             functions: derived.functions,
             special_types: Default::default(),
             entry_points: Default::default(),
