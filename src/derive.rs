@@ -387,7 +387,7 @@ impl<'a> DerivedModule<'a> {
         already_imported: Rc<RefCell<HashMap<Handle<Expression>, Handle<Expression>>>>,
         new_expressions: Rc<RefCell<Arena<Expression>>>,
         non_emitting_only: bool, // only brings items that should NOT be emitted into scope
-        unique: bool, // ensure expressions are unique with custom comparison
+        unique: bool,            // ensure expressions are unique with custom comparison
     ) -> Handle<Expression> {
         if let Some(h_new) = already_imported.borrow().get(&h_expr) {
             return *h_new;
@@ -592,12 +592,11 @@ impl<'a> DerivedModule<'a> {
                     expr,
                     self.map_span(span),
                     expression_eq,
-                )    
-            } else {
-                new_expressions.borrow_mut().append(
-                    expr,
-                    self.map_span(span),
                 )
+            } else {
+                new_expressions
+                    .borrow_mut()
+                    .append(expr, self.map_span(span))
             };
 
             already_imported.borrow_mut().insert(h_expr, h_new);
