@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 use naga::{
-    Arena, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
-    FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module, SampleLevel, Span,
-    Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
+    Arena, Block, Constant, EntryPoint, Expression, Function, FunctionArgument, FunctionResult,
+    GlobalVariable, Handle, ImageQuery, LocalVariable, Module, SampleLevel, Span, Statement,
+    StructMember, SwitchCase, Type, TypeInner, UniqueArena,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -112,12 +112,10 @@ impl<'a> DerivedModule<'a> {
                         size: *size,
                         stride: *stride,
                     },
-                    TypeInner::BindingArray { base, size } => {
-                        TypeInner::BindingArray {
-                            base: self.import_type(base),
-                            size: *size,
-                        }
-                    }
+                    TypeInner::BindingArray { base, size } => TypeInner::BindingArray {
+                        base: self.import_type(base),
+                        size: *size,
+                    },
                 },
             };
             let span = self.shader.as_ref().unwrap().types.get_span(*h_type);
