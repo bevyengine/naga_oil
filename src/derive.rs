@@ -1,6 +1,6 @@
 use indexmap::IndexMap;
 use naga::{
-    Arena, ArraySize, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
+    Arena, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
     FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module, SampleLevel, Span,
     Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
 };
@@ -113,13 +113,9 @@ impl<'a> DerivedModule<'a> {
                         stride: *stride,
                     },
                     TypeInner::BindingArray { base, size } => {
-                        let size = match size {
-                            c @ ArraySize::Constant(_) => *c,
-                            ArraySize::Dynamic => ArraySize::Dynamic,
-                        };
                         TypeInner::BindingArray {
                             base: self.import_type(base),
-                            size,
+                            size: *size,
                         }
                     }
                 },
