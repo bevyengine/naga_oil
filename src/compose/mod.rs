@@ -1652,7 +1652,7 @@ impl Composer {
                     offset: 0,
                 },
             })?;
-        shader_defs.extend(defines.into_iter());
+        shader_defs.extend(defines);
 
         let PreprocessOutput {
             preprocessed_source,
