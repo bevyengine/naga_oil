@@ -1,6 +1,6 @@
 [package]
 name = "naga_oil"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "a crate for combining and manipulating shaders using naga IR"
@@ -15,7 +15,7 @@ prune = []
 override_any = []
 
 [dependencies]
-naga = { version="0.13", features = ["wgsl-in", "wgsl-out", "glsl-in", "glsl-out", "clone", "span"] }
+naga = { version = "0.13", features = ["wgsl-in", "wgsl-out", "glsl-in", "glsl-out", "clone", "span"] }
 tracing = "0.1"
 regex = "1.5"
 regex-syntax = "0.6"
