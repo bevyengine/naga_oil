@@ -4,8 +4,7 @@ var<workgroup> atom: atomic<u32>;
 
 fn entry_point() -> f32 {
     atomicStore(&atom, 1u);          // atom = 1
-    let __x = 1;
-    var y = atomicLoad(&atom) * __x;      // y = 1, atom = 1
+    var y = atomicLoad(&atom);       // y = 1, atom = 1
     y += atomicAdd(&atom, 2u);       // y = 2, atom = 3
     y += atomicSub(&atom, 1u);       // y = 5, atom = 2
     y += atomicMax(&atom, 5u);       // y = 7, atom = 5
