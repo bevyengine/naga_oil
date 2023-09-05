@@ -1134,7 +1134,9 @@ mod test {
             })
             .unwrap();
 
-        assert_eq!(test_shader(&mut composer), 28.0);
+        if cfg!(feature = "test_shader") {
+            assert_eq!(test_shader(&mut composer), 28.0);
+        }
 
         let module = composer
             .make_naga_module(NagaModuleDescriptor {
