@@ -149,6 +149,7 @@ pub mod util;
 pub enum ShaderLanguage {
     #[default]
     Wgsl,
+    #[cfg(feature = "glsl")]
     Glsl,
 }
 
@@ -156,7 +157,9 @@ pub enum ShaderLanguage {
 pub enum ShaderType {
     #[default]
     Wgsl,
+    #[cfg(feature = "glsl")]
     GlslVertex,
+    #[cfg(feature = "glsl")]
     GlslFragment,
 }
 
@@ -164,6 +167,7 @@ impl From<ShaderType> for ShaderLanguage {
     fn from(ty: ShaderType) -> Self {
         match ty {
             ShaderType::Wgsl => ShaderLanguage::Wgsl,
+            #[cfg(feature = "glsl")]
             ShaderType::GlslVertex | ShaderType::GlslFragment => ShaderLanguage::Glsl,
         }
     }
@@ -548,7 +552,7 @@ impl Composer {
         &self,
         naga_module: &mut naga::Module,
         language: ShaderLanguage,
-        header_for: &str,
+        #[allow(unused)] header_for: &str, // Only used when GLSL is enabled
     ) -> Result<String, ComposerErrorInner> {
         // TODO: cache headers again
         let info =
@@ -563,6 +567,7 @@ impl Composer {
                 naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
             )
             .map_err(ComposerErrorInner::WgslBackError),
+            #[cfg(feature = "glsl")]
             ShaderLanguage::Glsl => {
                 let vec4 = naga_module.types.insert(
                     naga::Type {
@@ -654,6 +659,7 @@ impl Composer {
 
         let mut module_string = match language {
             ShaderLanguage::Wgsl => String::new(),
+            #[cfg(feature = "glsl")]
             ShaderLanguage::Glsl => String::from("#version 450\n"),
         };
 
@@ -737,6 +743,7 @@ impl Composer {
                     },
                 }
             })?,
+            #[cfg(feature = "glsl")]
             ShaderLanguage::Glsl => naga::front::glsl::Frontend::default()
                 .parse(
                     &naga::front::glsl::Options {
@@ -774,12 +781,14 @@ impl Composer {
         owned_types: &HashSet<String>,
     ) -> Result<(), ComposerErrorInner> {
         // TODO: remove this once glsl front support is complete
+        #[cfg(feature = "glsl")]
         if lang == ShaderLanguage::Glsl {
             return Ok(());
         }
 
         let recompiled = match lang {
             ShaderLanguage::Wgsl => naga::front::wgsl::parse_str(header).unwrap(),
+            #[cfg(feature = "glsl")]
             ShaderLanguage::Glsl => naga::front::glsl::Frontend::default()
                 .parse(
                     &naga::front::glsl::Options {
@@ -1231,7 +1240,11 @@ impl Composer {
 
         if self.validate && create_headers {
             // check that identifiers haven't been renamed
-            for language in [ShaderLanguage::Wgsl, ShaderLanguage::Glsl] {
+            for language in [
+                ShaderLanguage::Wgsl,
+                #[cfg(feature = "glsl")]
+                ShaderLanguage::Glsl,
+            ] {
                 let header = self
                     .naga_to_string(&mut header_ir, language, &module_definition.name)
                     .map_err(wrap_err)?;
@@ -1766,7 +1779,9 @@ impl Composer {
         Self::add_composable_data(&mut derived, &composable, None, 0, false);
 
         let stage = match shader_type {
+            #[cfg(feature = "glsl")]
             ShaderType::GlslVertex => Some(naga::ShaderStage::Vertex),
+            #[cfg(feature = "glsl")]
             ShaderType::GlslFragment => Some(naga::ShaderStage::Fragment),
             _ => None,
         };

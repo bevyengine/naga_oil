@@ -300,6 +300,7 @@ mod test {
         output_eq!(text, "tests/expected/missing_import.txt");
     }
 
+    #[cfg(feature = "glsl")]
     #[test]
     fn wgsl_call_glsl() {
         let mut composer = Composer::default();
@@ -351,6 +352,7 @@ mod test {
         let _ = wgsl;
     }
 
+    #[cfg(feature = "glsl")]
     #[test]
     fn glsl_call_wgsl() {
         let mut composer = Composer::default();
@@ -391,6 +393,7 @@ mod test {
         output_eq!(wgsl, "tests/expected/glsl_call_wgsl.txt");
     }
 
+    #[cfg(feature = "glsl")]
     #[test]
     fn basic_glsl() {
         let mut composer = Composer::default();
@@ -679,6 +682,7 @@ mod test {
         output_eq!(wgsl, "tests/expected/import_in_decl.txt");
     }
 
+    #[cfg(feature = "glsl")]
     #[test]
     fn glsl_const_import() {
         let mut composer = Composer::default();
@@ -720,6 +724,7 @@ mod test {
         output_eq!(wgsl, "tests/expected/glsl_const_import.txt");
     }
 
+    #[cfg(feature = "glsl")]
     #[test]
     fn glsl_wgsl_const_import() {
         let mut composer = Composer::default();
@@ -759,6 +764,7 @@ mod test {
 
         output_eq!(wgsl, "tests/expected/glsl_wgsl_const_import.txt");
     }
+    #[cfg(feature = "glsl")]
     #[test]
     fn wgsl_glsl_const_import() {
         let mut composer = Composer::default();

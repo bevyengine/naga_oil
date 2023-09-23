@@ -81,10 +81,12 @@ pub enum ComposerErrorInner {
     ImportNotFound(String, usize),
     #[error("{0}")]
     WgslParseError(naga::front::wgsl::ParseError),
+    #[cfg(feature = "glsl")]
     #[error("{0:?}")]
     GlslParseError(Vec<naga::front::glsl::Error>),
     #[error("naga_oil bug, please file a report: failed to convert imported module IR back into WGSL for use with WGSL shaders: {0}")]
     WgslBackError(naga::back::wgsl::Error),
+    #[cfg(feature = "glsl")]
     #[error("naga_oil bug, please file a report: failed to convert imported module IR back into GLSL for use with GLSL shaders: {0}")]
     GlslBackError(naga::back::glsl::Error),
     #[error("naga_oil bug, please file a report: composer failed to build a valid header: {0}")]
@@ -223,6 +225,7 @@ impl ComposerError {
                     .collect(),
                 vec![e.message().to_owned()],
             ),
+            #[cfg(feature = "glsl")]
             ComposerErrorInner::GlslParseError(e) => (
                 e.iter()
                     .map(|naga::front::glsl::Error { kind, meta }| {
@@ -247,6 +250,7 @@ impl ComposerError {
             ComposerErrorInner::WgslBackError(e) => {
                 return format!("{path}: wgsl back error: {e}");
             }
+            #[cfg(feature = "glsl")]
             ComposerErrorInner::GlslBackError(e) => {
                 return format!("{path}: glsl back error: {e}");
             }
