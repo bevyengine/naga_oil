@@ -1146,6 +1146,7 @@ impl Composer {
 
         if self.validate && create_headers {
             // check that identifiers haven't been renamed
+            #[allow(clippy::single_element_loop)]
             for language in [
                 ShaderLanguage::Wgsl,
                 #[cfg(feature = "glsl")]
