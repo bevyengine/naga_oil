@@ -288,6 +288,7 @@ impl Preprocessor {
                             break;
                         }
 
+                        final_string.push_str("\n");
                         line = lines.next().unwrap().0;
                     }
 
