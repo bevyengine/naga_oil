@@ -17,7 +17,7 @@ prune = []
 allow_deprecated = []
 
 [dependencies]
-naga = { version = "0.14", features = ["wgsl-in", "wgsl-out", "clone", "span"] }
+naga = { version = "0.14.1", features = ["wgsl-in", "wgsl-out", "clone", "span"] }
 tracing = "0.1"
 regex = "1.8"
 regex-syntax = "0.7"
