@@ -339,7 +339,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        assert_eq!(wgsl, include_str!("tests/expected/wgsl_call_glsl.txt"));
+        output_eq!(wgsl, "tests/expected/wgsl_call_glsl.txt");
     }
 
     #[cfg(feature = "glsl")]
