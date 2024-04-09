@@ -3,7 +3,7 @@ use std::{borrow::Cow, str::Lines};
 use regex::Regex;
 
 static RE_COMMENT: once_cell::sync::Lazy<Regex> =
-    once_cell::sync::Lazy::new(|| Regex::new(r"(//|/\*|\*/)").unwrap());
+    once_cell::sync::Lazy::new(|| Regex::new(r#"(//|/\*|\*/|\")"#).unwrap());
 
 pub struct CommentReplaceIter<'a> {
     lines: &'a mut Lines<'a>,
@@ -31,6 +31,27 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
         loop {
             let mut next_marker = markers.next();
             let mut section_end = next_marker.map(|m| m.start()).unwrap_or(line_in.len());
+
+            // comment markers in quoted strings should not be processed (unless the quote is in a comment ...)
+            if self.block_depth == 0 && next_marker.map_or(false, |marker| marker.as_str() == "\"")
+            {
+                let mut end_quote = markers.next();
+                while !end_quote.map_or(true, |marker| marker.as_str() == "\"") {
+                    end_quote = markers.next();
+                }
+
+                match end_quote {
+                    Some(end_quote) => {
+                        output.push_str(&line_in[section_start..end_quote.end()]);
+                        section_start = end_quote.end();
+                        continue;
+                    }
+                    None => {
+                        output.push_str(&line_in[section_start..]);
+                        return Some(Cow::Owned(output));
+                    }
+                }
+            }
 
             // skip partial tokens
             while next_marker.is_some() && section_start > section_end {
@@ -64,6 +85,7 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
                         "*/" => {
                             self.block_depth = self.block_depth.saturating_sub(1);
                         }
+                        "\"" => (),
                         _ => unreachable!(),
                     }
                     output.extend(std::iter::repeat(' ').take(marker.as_str().len()));
@@ -119,7 +141,7 @@ not commented
         None
     );
 
-    const PARTIAL_TESTS: [(&str, &str); 4] = [
+    const PARTIAL_TESTS: [(&str, &str); 10] = [
         (
             "1.0 /* block comment with a partial line comment on the end *// 2.0",
             "1.0                                                           / 2.0",
@@ -136,11 +158,35 @@ not commented
             "1.0 /* block comment with real line comment after */// line comment",
             "1.0                                                                ",
         ),
+        (
+            r#"#import "embedded://file.wgsl""#,
+            r#"#import "embedded://file.wgsl""#,
+        ),
+        (
+            r#"// #import "embedded://file.wgsl""#,
+            r#"                                 "#,
+        ),
+        (
+            r#"/* #import "embedded://file.wgsl" */"#,
+            r#"                                    "#,
+        ),
+        (
+            r#"/* #import "embedded:*/file.wgsl" */"#,
+            r#"                       file.wgsl" */"#,
+        ),
+        (
+            r#"#import "embedded://file.wgsl" // comment"#,
+            r#"#import "embedded://file.wgsl"           "#,
+        ),
+        (
+            r#"#import "embedded:/* */ /* /**/* / / /// * / //*/*/ / */*file.wgsl""#,
+            r#"#import "embedded:/* */ /* /**/* / / /// * / //*/*/ / */*file.wgsl""#,
+        ),
     ];
 
     for &(input, expected) in PARTIAL_TESTS.iter() {
         let mut nasty_processed = input.lines();
         let nasty_processed = nasty_processed.replace_comments().next().unwrap();
-        assert_eq!(&nasty_processed, expected);
+        assert_eq!((input, nasty_processed.as_ref()), (input, expected));
     }
 }
