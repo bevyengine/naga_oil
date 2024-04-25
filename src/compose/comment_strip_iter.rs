@@ -89,6 +89,67 @@ impl<'a> CommentReplaceExt<'a> for Lines<'a> {
 }
 
 #[test]
+fn multiline_comment_test() {
+    let test_cases = [
+        (
+            // Basic test
+            r"/*
+hoho
+*/",
+            r"  
+    
+  ",
+        ),
+        (
+            // Testing the commenting-out of multiline comments
+            r"///*
+hehe
+//*/",
+            r"    
+hehe
+    ",
+        ),
+        (
+            // Testing the commenting-out of single-line comments
+            r"/* // */ code goes here /*
+Still a comment // */
+/* dummy */",
+            r"         code goes here   
+                     
+           ",
+        ),
+        (
+            // A comment with a nested multiline comment
+            // Notice how the "//" inside the multiline comment doesn't take effect
+            r"/*
+//*
+*/commented
+*/not commented",
+            r"  
+   
+           
+  not commented",
+        ),
+    ];
+
+    for &(input, expected) in test_cases.iter() {
+        for (output_line, expected_line) in input.lines().replace_comments().zip(expected.lines()) {
+            assert_eq!(output_line.as_ref(), expected_line);
+        }
+    }
+}
+
+#[test]
+fn test_comment_becomes_spaces() {
+    let test_cases = [("let a/**/b =3u;", "let a    b =3u;")];
+    for &(input, expected) in test_cases.iter() {
+        for (output_line, expected_line) in input.lines().replace_comments().zip(expected.lines()) {
+            assert_eq!(output_line.as_ref(), expected_line);
+        }
+    }
+}
+
+#[test]
 fn comment_test() {
     const INPUT: &str = r"
 not commented
