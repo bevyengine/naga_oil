@@ -2,38 +2,22 @@ use std::{borrow::Cow, ops::Range};
 
 use winnow::{
     ascii::till_line_ending,
-    combinator::{cut_err, opt},
+    combinator::{cut_err, opt, preceded, repeat, terminated},
     error::StrContext,
-    token::any,
+    token::{any, none_of},
     Located, PResult, Parser,
 };
 
 struct SourceCode {
     /** Sorted pieces of the source code without any gaps */
-    parts: Vec<SourceCodePart>,
+    parts: Vec<(CodePart, Range<usize>)>,
 }
 
-enum SourceCodePart {
-    Text(Range<usize>),
-    SingleLineComment(SingleLineComment),
-    MultiLineComment(MultiLineComment),
-}
-
-impl SourceCodePart {
-    fn span(&self) -> Range<usize> {
-        match self {
-            SourceCodePart::Text(span) => span.clone(),
-            SourceCodePart::SingleLineComment(comment) => comment.span.clone(),
-            SourceCodePart::MultiLineComment(comment) => comment.span.clone(),
-        }
-    }
-}
-
-pub struct SingleLineComment {
-    pub span: Range<usize>,
-}
-pub struct MultiLineComment {
-    pub span: Range<usize>,
+enum CodePart {
+    Text,
+    QuotedText,
+    SingleLineComment,
+    MultiLineComment,
 }
 
 fn parse_source(input: &mut Located<&str>) -> PResult<SourceCode> {
@@ -42,36 +26,52 @@ fn parse_source(input: &mut Located<&str>) -> PResult<SourceCode> {
         if input.is_empty() {
             break;
         }
-        if let Some(part) = opt(single_line_comment).parse_next(input)? {
-            parts.push(SourceCodePart::SingleLineComment(part));
+        if let Some(part) = opt(quoted_string).parse_next(input)? {
+            parts.push((CodePart::QuotedText, part));
+        } else if let Some(part) = opt(single_line_comment).parse_next(input)? {
+            parts.push((CodePart::SingleLineComment, part));
         } else if let Some(part) = opt(multi_line_comment).parse_next(input)? {
-            parts.push(SourceCodePart::MultiLineComment(part));
+            parts.push((CodePart::MultiLineComment, part));
         } else {
             let text_span = any.span().parse_next(input)?;
-            if let Some(SourceCodePart::Text(last_span)) = parts.last_mut() {
+            if let Some((CodePart::Text, last_span)) = parts.last_mut() {
                 last_span.end = text_span.end;
             } else {
-                parts.push(SourceCodePart::Text(text_span));
+                parts.push((CodePart::Text, text_span));
             }
         }
     }
     Ok(SourceCode { parts })
 }
-
-fn single_line_comment(input: &mut Located<&str>) -> PResult<SingleLineComment> {
+fn quoted_string(input: &mut Located<&str>) -> PResult<Range<usize>> {
+    // See https://docs.rs/winnow/latest/winnow/_topic/json/index.html
+    preceded(
+        '\"',
+        cut_err(terminated(
+            repeat(0.., string_character).fold(|| (), |a, _| a),
+            '\"',
+        )),
+    )
+    .span()
+    .parse_next(input)
+}
+fn string_character(input: &mut Located<&str>) -> PResult<()> {
+    let c = none_of('\"').parse_next(input)?;
+    if c == '\\' {
+        let _ = any.parse_next(input)?;
+    }
+    Ok(())
+}
+fn single_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
     let start_span = "//".span().parse_next(input)?;
     let text_span = till_line_ending.span().parse_next(input)?;
-    Ok(SingleLineComment {
-        span: start_span.start..text_span.end,
-    })
+    Ok(start_span.start..text_span.end)
 }
-fn multi_line_comment(input: &mut Located<&str>) -> PResult<MultiLineComment> {
+fn multi_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
     let start_span = "/*".span().parse_next(input)?;
     loop {
         if let Some(end_span) = opt("*/".span()).parse_next(input)? {
-            return Ok(MultiLineComment {
-                span: start_span.start..end_span.end,
-            });
+            return Ok(start_span.start..end_span.end);
         } else if let Some(_) = opt(multi_line_comment).parse_next(input)? {
             // We found a nested comment, skip it
         } else {
@@ -110,8 +110,7 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
         self.text_index = line_end;
 
         let mut parts = Vec::new();
-        for (i, parsed_part) in self.parsed.parts.iter().enumerate().skip(self.parsed_index) {
-            let span = parsed_part.span();
+        for (i, (code_part, span)) in self.parsed.parts.iter().enumerate().skip(self.parsed_index) {
             if span.start >= line_end {
                 break;
             }
@@ -119,7 +118,7 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
                 self.parsed_index = i + 1;
                 continue;
             }
-            parts.push((parsed_part, clamp_range(span, line_start, line_end)));
+            parts.push((code_part, clamp_range(span.clone(), line_start, line_end)));
         }
 
         assert!(parts.len() > 0);
@@ -127,16 +126,13 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
         // Fast path
         if parts.len() == 1 {
             match parts.into_iter().next().unwrap() {
-                (SourceCodePart::Text(_), span) => {
+                (CodePart::Text | CodePart::QuotedText, span) => {
                     return Some((
                         Cow::Borrowed(&self.text[span]),
                         &self.text[line_start..line_end],
                     ));
                 }
-                (
-                    SourceCodePart::SingleLineComment(_) | SourceCodePart::MultiLineComment(_),
-                    span,
-                ) => {
+                (CodePart::SingleLineComment | CodePart::MultiLineComment, span) => {
                     let spaces = " ".repeat(span.len());
                     return Some((Cow::Owned(spaces), &self.text[line_start..line_end]));
                 }
@@ -149,10 +145,10 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
             output.push_str(&self.text[last_end..span.start]);
             last_end = span.end;
             match part {
-                SourceCodePart::Text(_) => {
+                CodePart::Text | CodePart::QuotedText => {
                     output.push_str(&self.text[span]);
                 }
-                SourceCodePart::SingleLineComment(_) | SourceCodePart::MultiLineComment(_) => {
+                CodePart::SingleLineComment | CodePart::MultiLineComment => {
                     output.extend(std::iter::repeat(' ').take(span.len()));
                 }
             }
