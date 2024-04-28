@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use regex::Regex;
 
 use super::{
-    comment_strip_iter::CommentReplaceExt,
+    comment_strip_iter::replace_comments,
     parse_imports::{parse_imports, substitute_identifiers},
     ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
 };
@@ -245,8 +245,7 @@ impl Preprocessor {
         let len = shader_str.len();
 
         // this code broadly stolen from bevy_render::ShaderProcessor
-        let mut lines = shader_str.lines();
-        let mut lines = lines.replace_comments().zip(shader_str.lines()).peekable();
+        let mut lines = replace_comments(shader_str).peekable();
 
         while let Some((mut line, original_line)) = lines.next() {
             let mut output = false;
@@ -271,8 +270,9 @@ impl Preprocessor {
 
                     loop {
                         // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
-                        final_string.extend(std::iter::repeat(" ").take(line.len()));
-                        offset += line.len() + 1;
+                        final_string
+                            .extend(std::iter::repeat(" ").take(line.len().saturating_sub(1)));
+                        offset += line.len();
 
                         // PERF: Ideally we don't do multiple `match_indices` passes over `line`
                         // in addition to the final pass for the import parse
@@ -283,7 +283,6 @@ impl Preprocessor {
                         //     let import_lines = &shader_str[initial_offset..offset]
                         // but we need the comments removed, and the iterator approach doesn't make that easy
                         import_lines.push_str(&line);
-                        import_lines.push('\n');
 
                         if open_count == 0 || lines.peek().is_none() {
                             break;
@@ -356,15 +355,15 @@ impl Preprocessor {
                     final_string.push_str(&item_replaced_line);
                     let diff = line.len().saturating_sub(item_replaced_line.len());
                     final_string.extend(std::iter::repeat(" ").take(diff));
-                    offset += original_line.len() + 1;
+                    offset += original_line.len();
                     output = true;
                 }
             }
 
             if !output {
                 // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
-                final_string.extend(std::iter::repeat(" ").take(line.len()));
-                offset += line.len() + 1;
+                final_string.extend(std::iter::repeat(" ").take(line.len().saturating_sub(1)));
+                offset += line.len();
             }
             final_string.push('\n');
         }
@@ -398,10 +397,9 @@ impl Preprocessor {
         let mut defines = HashMap::default();
         let mut effective_defs = HashSet::default();
 
-        let mut lines = shader_str.lines();
-        let mut lines = lines.replace_comments().peekable();
+        let mut lines = replace_comments(shader_str).peekable();
 
-        while let Some(mut line) = lines.next() {
+        while let Some((mut line, _)) = lines.next() {
             let (is_scope, def) = self.check_scope(&HashMap::default(), &line, None, offset)?;
 
             if is_scope {
@@ -423,7 +421,6 @@ impl Preprocessor {
                     //     let import_lines = &shader_str[initial_offset..offset]
                     // but we need the comments removed, and the iterator approach doesn't make that easy
                     import_lines.push_str(&line);
-                    import_lines.push('\n');
 
                     if open_count == 0 || lines.peek().is_none() {
                         break;
@@ -432,7 +429,7 @@ impl Preprocessor {
                     // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
                     offset += line.len() + 1;
 
-                    line = lines.next().unwrap();
+                    line = lines.next().unwrap().0;
                 }
 
                 parse_imports(import_lines.as_str(), &mut declared_imports).map_err(
