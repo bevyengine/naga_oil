@@ -108,6 +108,7 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
             .map(|i| line_start + i + 1)
             .unwrap_or_else(|| self.text.len());
         self.text_index = line_end;
+        let original = self.text[line_start..line_end].trim_end();
 
         let mut parts = Vec::new();
         for (i, (code_part, span)) in self.parsed.parts.iter().enumerate().skip(self.parsed_index) {
@@ -127,14 +128,11 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
         if parts.len() == 1 {
             match parts.into_iter().next().unwrap() {
                 (CodePart::Text | CodePart::QuotedText, span) => {
-                    return Some((
-                        Cow::Borrowed(&self.text[span]),
-                        &self.text[line_start..line_end],
-                    ));
+                    return Some((Cow::Borrowed(&self.text[span].trim_end()), original));
                 }
-                (CodePart::SingleLineComment | CodePart::MultiLineComment, span) => {
-                    let spaces = " ".repeat(span.len());
-                    return Some((Cow::Owned(spaces), &self.text[line_start..line_end]));
+                (CodePart::SingleLineComment | CodePart::MultiLineComment, _) => {
+                    let spaces = " ".repeat(original.len());
+                    return Some((Cow::Owned(spaces), original));
                 }
             }
         }
@@ -149,13 +147,14 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
                     output.push_str(&self.text[span]);
                 }
                 CodePart::SingleLineComment | CodePart::MultiLineComment => {
+                    // TODO: This technically changes the length of a line (\n)
                     output.extend(std::iter::repeat(' ').take(span.len()));
                 }
             }
         }
 
         assert!(last_end == line_end);
-        Some((Cow::Owned(output), &self.text[line_start..line_end]))
+        Some((Cow::Owned(output), original))
     }
 }
 
@@ -193,7 +192,7 @@ not commented
 
     assert_eq!(
         replace_comments(INPUT).find(|(line, original)| {
-            (line.trim_end() != "not commented" && !line.chars().all(|c| c == ' ' || c == '\n'))
+            (line != "not commented" && !line.chars().all(|c| c == ' '))
                 || line.len() != original.len()
         }),
         None

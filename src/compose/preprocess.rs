@@ -397,10 +397,9 @@ impl Preprocessor {
         let mut defines = HashMap::default();
         let mut effective_defs = HashSet::default();
 
-        let mut lines = shader_str.lines();
-        let mut lines = lines.replace_comments().peekable();
+        let mut lines = replace_comments(shader_str).peekable();
 
-        while let Some(mut line) = lines.next() {
+        while let Some((mut line, _)) = lines.next() {
             let (is_scope, def) = self.check_scope(&HashMap::default(), &line, None, offset)?;
 
             if is_scope {
@@ -431,7 +430,7 @@ impl Preprocessor {
                     // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
                     offset += line.len() + 1;
 
-                    line = lines.next().unwrap();
+                    line = lines.next().unwrap().0;
                 }
 
                 parse_imports(import_lines.as_str(), &mut declared_imports).map_err(
