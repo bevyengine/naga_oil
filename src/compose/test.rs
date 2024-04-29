@@ -1448,6 +1448,8 @@ mod test {
             ),
             module: &shader_module,
             entry_point: "run_test",
+            // TODO: Probably wrong
+            constants: &HashMap::new(),
         });
 
         let bindgroup = device.create_bind_group(&BindGroupDescriptor {

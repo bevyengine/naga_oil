@@ -136,7 +136,6 @@ impl<'a> DerivedModule<'a> {
 
             let new_const = Constant {
                 name: c.name.clone(),
-                r#override: c.r#override.clone(),
                 ty: self.import_type(&c.ty),
                 init: self.import_const_expression(c.init),
             };
@@ -186,7 +185,7 @@ impl<'a> DerivedModule<'a> {
     pub fn import_const_expression(&mut self, h_cexpr: Handle<Expression>) -> Handle<Expression> {
         self.import_expression(
             h_cexpr,
-            &self.shader.as_ref().unwrap().const_expressions,
+            &self.shader.as_ref().unwrap().global_expressions,
             self.const_expression_map.clone(),
             self.const_expressions.clone(),
             false,
@@ -369,6 +368,9 @@ impl<'a> DerivedModule<'a> {
                     | Statement::Continue
                     | Statement::Kill
                     | Statement::Barrier(_) => stmt.clone(),
+                    Statement::SubgroupBallot { result, predicate } => todo!(),
+                    Statement::SubgroupGather { mode, argument, result } => todo!(),
+                    Statement::SubgroupCollectiveOperation { op, collective_op, argument, result } => todo!(),
                 }
             })
             .collect();
@@ -592,6 +594,10 @@ impl<'a> DerivedModule<'a> {
                     committed: *committed,
                 }
             }
+            // TODO: Probably wrong
+            Expression::Override(_) => expr.clone(),
+            Expression::SubgroupBallotResult => todo!(),
+            Expression::SubgroupOperationResult { ty } => todo!(),
         };
 
         if !non_emitting_only || is_external {
@@ -748,12 +754,15 @@ impl<'a> From<DerivedModule<'a>> for naga::Module {
             types: derived.types,
             constants: derived.constants,
             global_variables: derived.globals,
-            const_expressions: Rc::try_unwrap(derived.const_expressions)
+            // TODO: Maybe wrong
+            global_expressions: Rc::try_unwrap(derived.const_expressions)
                 .unwrap()
                 .into_inner(),
             functions: derived.functions,
             special_types: Default::default(),
             entry_points: Default::default(),
+            // TODO: Probably wrong
+            overrides: Default::default(),
         }
     }
 }
