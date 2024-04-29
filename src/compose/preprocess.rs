@@ -2,16 +2,16 @@ use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 use regex::Regex;
+use winnow::{Located, Parser};
 
 use super::{
     comment_strip_iter::replace_comments,
     parse_imports::{parse_imports, substitute_identifiers},
-    ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
+    preprocess1, ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
 };
 
 #[derive(Debug)]
 pub struct Preprocessor {
-    version_regex: Regex,
     ifdef_regex: Regex,
     ifndef_regex: Regex,
     ifop_regex: Regex,
@@ -19,15 +19,11 @@ pub struct Preprocessor {
     endif_regex: Regex,
     def_regex: Regex,
     def_regex_delimited: Regex,
-    import_regex: Regex,
-    define_import_path_regex: Regex,
-    define_shader_def_regex: Regex,
 }
 
 impl Default for Preprocessor {
     fn default() -> Self {
         Self {
-            version_regex: Regex::new(r"^\s*#version\s+([0-9]+)").unwrap(),
             ifdef_regex: Regex::new(r"^\s*#\s*(else\s+)?\s*ifdef\s+([\w|\d|_]+)").unwrap(),
             ifndef_regex: Regex::new(r"^\s*#\s*(else\s+)?\s*ifndef\s+([\w|\d|_]+)").unwrap(),
             ifop_regex: Regex::new(
@@ -38,10 +34,6 @@ impl Default for Preprocessor {
             endif_regex: Regex::new(r"^\s*#\s*endif").unwrap(),
             def_regex: Regex::new(r"#\s*([\w|\d|_]+)").unwrap(),
             def_regex_delimited: Regex::new(r"#\s*\{([\w|\d|_]+)\}").unwrap(),
-            import_regex: Regex::new(r"^\s*#\s*import\s").unwrap(),
-            define_import_path_regex: Regex::new(r"^\s*#\s*define_import_path\s+([^\s]+)").unwrap(),
-            define_shader_def_regex: Regex::new(r"^\s*#\s*define\s+([\w|\d|_]+)\s*([-\w|\d]+)?")
-                .unwrap(),
         }
     }
 }
@@ -250,20 +242,26 @@ impl Preprocessor {
         while let Some((mut line, original_line)) = lines.next() {
             let mut output = false;
 
-            if let Some(cap) = self.version_regex.captures(&line) {
-                let v = cap.get(1).unwrap().as_str();
-                if v != "440" && v != "450" {
+            if let Some(cap) = {
+                let a = preprocess1::version.parse(Located::new(line.trim())).ok();
+                a
+            } {
+                if cap.version_number != 440 && cap.version_number != 450 {
                     return Err(ComposerErrorInner::GlslInvalidVersion(offset));
                 }
             } else if self
                 .check_scope(shader_defs, &line, Some(&mut scope), offset)?
                 .0
-                || self.define_import_path_regex.captures(&line).is_some()
-                || self.define_shader_def_regex.captures(&line).is_some()
+                || preprocess1::define_import_path
+                    .parse(Located::new(line.trim()))
+                    .is_ok()
+                || preprocess1::define_shader_def
+                    .parse(Located::new(line.trim()))
+                    .is_ok()
             {
                 // ignore
             } else if scope.active() {
-                if self.import_regex.is_match(&line) {
+                if preprocess1::import_start.parse(Located::new(&line)).is_ok() {
                     let mut import_lines = String::default();
                     let mut open_count = 0;
                     let initial_offset = offset;
@@ -406,7 +404,7 @@ impl Preprocessor {
                 if let Some(def) = def {
                     effective_defs.insert(def.to_owned());
                 }
-            } else if self.import_regex.is_match(&line) {
+            } else if preprocess1::import_start.parse(Located::new(&line)).is_ok() {
                 let mut import_lines = String::default();
                 let mut open_count = 0;
                 let initial_offset = offset;
@@ -441,19 +439,28 @@ impl Preprocessor {
                         )
                     },
                 )?;
-            } else if let Some(cap) = self.define_import_path_regex.captures(&line) {
-                name = Some(cap.get(1).unwrap().as_str().to_string());
-            } else if let Some(cap) = self.define_shader_def_regex.captures(&line) {
+            } else if let Some(cap) = {
+                let a = preprocess1::define_import_path
+                    .parse(Located::new(line.trim()))
+                    .ok();
+                a
+            } {
+                name = Some(line[cap.path].to_string());
+            } else if let Some(cap) = {
+                let a = preprocess1::define_shader_def
+                    .parse(Located::new(line.trim()))
+                    .ok();
+                a
+            } {
                 if allow_defines {
-                    let def = cap.get(1).unwrap();
-                    let name = def.as_str().to_string();
+                    let name = line[cap.name].to_string();
 
-                    let value = if let Some(val) = cap.get(2) {
-                        if let Ok(val) = val.as_str().parse::<u32>() {
+                    let value = if let Some(val) = cap.value.map(|v| &line[v]) {
+                        if let Ok(val) = val.parse::<u32>() {
                             ShaderDefValue::UInt(val)
-                        } else if let Ok(val) = val.as_str().parse::<i32>() {
+                        } else if let Ok(val) = val.parse::<i32>() {
                             ShaderDefValue::Int(val)
-                        } else if let Ok(val) = val.as_str().parse::<bool>() {
+                        } else if let Ok(val) = val.parse::<bool>() {
                             ShaderDefValue::Bool(val)
                         } else {
                             ShaderDefValue::Bool(false) // this error will get picked up when we fully preprocess the module

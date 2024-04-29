@@ -1,4 +1,9 @@
+use std::ops::Range;
+
 use indexmap::IndexMap;
+use winnow::{Located, Parser};
+
+use crate::compose::preprocess1::{import_directive, ImportTree};
 
 use super::{
     tokenizer::{Token, Tokenizer},
@@ -9,106 +14,49 @@ pub fn parse_imports<'a>(
     input: &'a str,
     declared_imports: &mut IndexMap<String, Vec<String>>,
 ) -> Result<(), (&'a str, usize)> {
-    let mut tokens = Tokenizer::new(input, false).peekable();
+    let input = input.trim();
+    let imports = import_directive.parse(Located::new(input)).map_err(|_v| {
+        // panic!("{:#?}", _v);
+        ("failed to parse imports", 0)
+    })?;
 
-    match tokens.next() {
-        Some(Token::Other('#', _)) => (),
-        Some(other) => return Err(("expected `#import`", other.pos())),
-        None => return Err(("expected #import", input.len())),
-    };
-    match tokens.next() {
-        Some(Token::Identifier("import", _)) => (),
-        Some(other) => return Err(("expected `#import`", other.pos())),
-        None => return Err(("expected `#import`", input.len())),
-    };
-
-    let mut stack = Vec::default();
-    let mut current = String::default();
-    let mut as_name = None;
-    let mut is_deprecated_itemlist = false;
-
-    loop {
-        match tokens.peek() {
-            Some(Token::Identifier(ident, _)) => {
-                current.push_str(ident);
-                tokens.next();
-
-                if tokens.peek().and_then(Token::identifier) == Some("as") {
-                    let pos = tokens.next().unwrap().pos();
-                    let Some(Token::Identifier(name, _)) = tokens.next() else {
-                        return Err(("expected identifier after `as`", pos));
-                    };
-
-                    as_name = Some(name);
-                }
-
-                // support deprecated #import mod item
-                if let Some(Token::Identifier(..)) = tokens.peek() {
-                    #[cfg(not(feature = "allow_deprecated"))]
-                    tracing::warn!("item list imports are deprecated, please use `rust::style::item_imports` (or use feature `allow_deprecated`)`\n| {}", input);
-
-                    is_deprecated_itemlist = true;
-                    stack.push(format!("{}::", current));
-                    current = String::default();
-                    as_name = None;
-                }
-
-                continue;
-            }
-            Some(Token::Other('{', pos)) => {
-                if !current.ends_with("::") {
-                    return Err(("open brace must follow `::`", *pos));
-                }
-                stack.push(current);
-                current = String::default();
-                as_name = None;
-            }
-            Some(Token::Other(',', _))
-            | Some(Token::Other('}', _))
-            | Some(Token::Other('\n', _))
-            | None => {
-                if !current.is_empty() {
-                    let used_name = as_name.map(ToString::to_string).unwrap_or_else(|| {
-                        current
-                            .rsplit_once("::")
-                            .map(|(_, name)| name.to_owned())
-                            .unwrap_or(current.clone())
-                    });
-                    declared_imports.entry(used_name).or_default().push(format!(
-                        "{}{}",
-                        stack.join(""),
-                        current
-                    ));
-                    current = String::default();
-                    as_name = None;
-                }
-
-                if let Some(Token::Other('}', pos)) = tokens.peek() {
-                    if stack.pop().is_none() {
-                        return Err(("close brace without open", *pos));
-                    }
-                }
-
-                if tokens.peek().is_none() {
-                    break;
-                }
-            }
-            Some(Token::Other(';', _)) => {
-                tokens.next();
-                if let Some(token) = tokens.peek() {
-                    return Err(("unexpected token after ';'", token.pos()));
-                }
-            }
-            Some(Token::Other(_, pos)) => return Err(("unexpected token", *pos)),
-            Some(Token::Whitespace(..)) => unreachable!(),
-        }
-
-        tokens.next();
+    fn to_stack<'a>(input: &'a str, ranges: &[Range<usize>]) -> Vec<&'a str> {
+        ranges
+            .iter()
+            .map(|range| &input[range.clone()])
+            .collect::<Vec<_>>()
     }
 
-    if !(stack.is_empty() || is_deprecated_itemlist && stack.len() == 1) {
-        return Err(("missing close brace", input.len()));
+    fn walk_import_tree<'a>(
+        input: &'a str,
+        tree: &ImportTree,
+        stack: &[&'a str],
+        declared_imports: &mut IndexMap<String, Vec<String>>,
+    ) {
+        let (name_range, path_ranges) = match tree {
+            ImportTree::Path(path_ranges) => (path_ranges.last().unwrap().clone(), path_ranges),
+            ImportTree::Alias {
+                path: path_ranges,
+                alias: alias_range,
+            } => (alias_range.clone(), path_ranges),
+            ImportTree::Children { path, children } => {
+                let extended_stack = [stack, &to_stack(input, path)].concat();
+                for child in children {
+                    walk_import_tree(input, child, &extended_stack, declared_imports);
+                }
+                return;
+            }
+        };
+
+        let name = input[name_range].to_string();
+        let extended_stack = [stack, &to_stack(input, &path_ranges)].concat();
+        declared_imports
+            .entry(name)
+            .or_default()
+            .push(extended_stack.join("::"));
     }
+
+    walk_import_tree(input, &imports.tree, &[], declared_imports);
 
     Ok(())
 }

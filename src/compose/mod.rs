@@ -144,6 +144,7 @@ pub mod comment_strip_iter;
 pub mod error;
 pub mod parse_imports;
 pub mod preprocess;
+pub mod preprocess1;
 mod test;
 pub mod tokenizer;
 pub mod util;

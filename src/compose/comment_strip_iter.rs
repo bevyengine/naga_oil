@@ -43,7 +43,7 @@ fn parse_source(input: &mut Located<&str>) -> PResult<SourceCode> {
     }
     Ok(SourceCode { parts })
 }
-fn quoted_string(input: &mut Located<&str>) -> PResult<Range<usize>> {
+pub fn quoted_string(input: &mut Located<&str>) -> PResult<Range<usize>> {
     // See https://docs.rs/winnow/latest/winnow/_topic/json/index.html
     preceded(
         '\"',
@@ -62,12 +62,13 @@ fn string_character(input: &mut Located<&str>) -> PResult<()> {
     }
     Ok(())
 }
-fn single_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
+pub fn single_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
     let start_span = "//".span().parse_next(input)?;
+    // TODO: Use the rules from https://www.w3.org/TR/WGSL/#line-break instead of till_line_ending
     let text_span = till_line_ending.span().parse_next(input)?;
     Ok(start_span.start..text_span.end)
 }
-fn multi_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
+pub fn multi_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
     let start_span = "/*".span().parse_next(input)?;
     loop {
         if let Some(end_span) = opt("*/".span()).parse_next(input)? {
@@ -108,7 +109,7 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
             .map(|i| line_start + i + 1)
             .unwrap_or_else(|| self.text.len());
         self.text_index = line_end;
-        let original = self.text[line_start..line_end].trim_end();
+        let original = self.text[line_start..line_end].trim_end_matches('\n');
 
         let mut parts = Vec::new();
         for (i, (code_part, span)) in self.parsed.parts.iter().enumerate().skip(self.parsed_index) {
@@ -128,7 +129,7 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
         if parts.len() == 1 {
             match parts.into_iter().next().unwrap() {
                 (CodePart::Text | CodePart::QuotedText, span) => {
-                    return Some((Cow::Borrowed(&self.text[span].trim_end()), original));
+                    return Some((Cow::Borrowed(self.text[span].trim_end()), original));
                 }
                 (CodePart::SingleLineComment | CodePart::MultiLineComment, _) => {
                     let spaces = " ".repeat(original.len());
@@ -147,10 +148,14 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
                     output.push_str(&self.text[span]);
                 }
                 CodePart::SingleLineComment | CodePart::MultiLineComment => {
-                    // TODO: This technically changes the length of a line (\n)
                     output.extend(std::iter::repeat(' ').take(span.len()));
                 }
             }
+        }
+        // Limit the length of output to the length of the original line
+        let max_len = original.len();
+        if output.len() > max_len {
+            output.truncate(max_len);
         }
 
         assert!(last_end == line_end);
