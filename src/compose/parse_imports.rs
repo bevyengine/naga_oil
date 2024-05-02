@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use indexmap::IndexMap;
-use winnow::{Located, Parser};
+use winnow::{stream::Recoverable, Located, Parser};
 
 use crate::compose::preprocess1::{import_directive, ImportTree};
 
@@ -15,10 +15,12 @@ pub fn parse_imports<'a>(
     declared_imports: &mut IndexMap<String, Vec<String>>,
 ) -> Result<(), (&'a str, usize)> {
     let input = input.trim();
-    let imports = import_directive.parse(Located::new(input)).map_err(|_v| {
-        // panic!("{:#?}", _v);
-        ("failed to parse imports", 0)
-    })?;
+    let imports = import_directive
+        .parse(Recoverable::new(Located::new(input)))
+        .map_err(|_v| {
+            // panic!("{:#?}", _v);
+            ("failed to parse imports", 0)
+        })?;
 
     fn to_stack<'a>(input: &'a str, ranges: &[Range<usize>]) -> Vec<&'a str> {
         ranges

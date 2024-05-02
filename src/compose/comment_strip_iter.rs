@@ -4,9 +4,12 @@ use winnow::{
     ascii::till_line_ending,
     combinator::{cut_err, opt, preceded, repeat, terminated},
     error::StrContext,
+    stream::Recoverable,
     token::{any, none_of},
     Located, PResult, Parser,
 };
+
+use super::preprocess1::{multi_line_comment, quoted_string, single_line_comment, Input};
 
 struct SourceCode {
     /** Sorted pieces of the source code without any gaps */
@@ -20,7 +23,7 @@ enum CodePart {
     MultiLineComment,
 }
 
-fn parse_source(input: &mut Located<&str>) -> PResult<SourceCode> {
+fn parse_source(input: &mut Input<'_>) -> PResult<SourceCode> {
     let mut parts = Vec::new();
     loop {
         if input.is_empty() {
@@ -28,9 +31,9 @@ fn parse_source(input: &mut Located<&str>) -> PResult<SourceCode> {
         }
         if let Some(part) = opt(quoted_string).parse_next(input)? {
             parts.push((CodePart::QuotedText, part));
-        } else if let Some(part) = opt(single_line_comment).parse_next(input)? {
+        } else if let Some(part) = opt(single_line_comment.span()).parse_next(input)? {
             parts.push((CodePart::SingleLineComment, part));
-        } else if let Some(part) = opt(multi_line_comment).parse_next(input)? {
+        } else if let Some(part) = opt(multi_line_comment.span()).parse_next(input)? {
             parts.push((CodePart::MultiLineComment, part));
         } else {
             let text_span = any.span().parse_next(input)?;
@@ -43,47 +46,6 @@ fn parse_source(input: &mut Located<&str>) -> PResult<SourceCode> {
     }
     Ok(SourceCode { parts })
 }
-pub fn quoted_string(input: &mut Located<&str>) -> PResult<Range<usize>> {
-    // See https://docs.rs/winnow/latest/winnow/_topic/json/index.html
-    preceded(
-        '\"',
-        cut_err(terminated(
-            repeat(0.., string_character).fold(|| (), |a, _| a),
-            '\"',
-        )),
-    )
-    .span()
-    .parse_next(input)
-}
-fn string_character(input: &mut Located<&str>) -> PResult<()> {
-    let c = none_of('\"').parse_next(input)?;
-    if c == '\\' {
-        let _ = any.parse_next(input)?;
-    }
-    Ok(())
-}
-pub fn single_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
-    let start_span = "//".span().parse_next(input)?;
-    // TODO: Use the rules from https://www.w3.org/TR/WGSL/#line-break instead of till_line_ending
-    let text_span = till_line_ending.span().parse_next(input)?;
-    Ok(start_span.start..text_span.end)
-}
-pub fn multi_line_comment(input: &mut Located<&str>) -> PResult<Range<usize>> {
-    let start_span = "/*".span().parse_next(input)?;
-    loop {
-        if let Some(end_span) = opt("*/".span()).parse_next(input)? {
-            return Ok(start_span.start..end_span.end);
-        } else if let Some(_) = opt(multi_line_comment).parse_next(input)? {
-            // We found a nested comment, skip it
-        } else {
-            // Skip a single character
-            let _ = cut_err(any)
-                .context(StrContext::Label("multiline comment"))
-                .parse_next(input)?;
-        }
-    }
-}
-
 pub struct CommentReplaceIter<'a> {
     text: &'a str,
     text_index: usize,
@@ -167,7 +129,9 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
 /// The iterator will yield the same lines as the input text, but with comments replaced.
 /// Lines will include the newline character at the end!
 pub fn replace_comments(input: &str) -> CommentReplaceIter {
-    let parsed = parse_source(&mut Located::new(input)).unwrap();
+    let parsed = parse_source
+        .parse(Recoverable::new(Located::new(input)))
+        .unwrap();
     CommentReplaceIter {
         text: input,
         text_index: 0,

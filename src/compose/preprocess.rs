@@ -2,12 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
 use regex::Regex;
-use winnow::{Located, Parser};
+use winnow::Parser;
 
 use super::{
     comment_strip_iter::replace_comments,
     parse_imports::{parse_imports, substitute_identifiers},
-    preprocess1, ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
+    preprocess1::{self, input_new},
+    ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
 };
 
 #[derive(Debug)]
@@ -241,27 +242,29 @@ impl Preprocessor {
 
         while let Some((mut line, original_line)) = lines.next() {
             let mut output = false;
+            let trimmed_line = line.trim();
 
             if let Some(cap) = {
-                let a = preprocess1::version.parse(Located::new(line.trim())).ok();
+                let a = preprocess1::version.parse(input_new(trimmed_line)).ok();
                 a
             } {
-                if cap.version_number != 440 && cap.version_number != 450 {
+                let version_number = cap.version_number(trimmed_line);
+                if version_number != Some(440) && version_number != Some(450) {
                     return Err(ComposerErrorInner::GlslInvalidVersion(offset));
                 }
             } else if self
                 .check_scope(shader_defs, &line, Some(&mut scope), offset)?
                 .0
                 || preprocess1::define_import_path
-                    .parse(Located::new(line.trim()))
+                    .parse(input_new(trimmed_line))
                     .is_ok()
                 || preprocess1::define_shader_def
-                    .parse(Located::new(line.trim()))
+                    .parse(input_new(trimmed_line))
                     .is_ok()
             {
                 // ignore
             } else if scope.active() {
-                if preprocess1::import_start.parse(Located::new(&line)).is_ok() {
+                if preprocess1::import_start.parse(input_new(&line)).is_ok() {
                     let mut import_lines = String::default();
                     let mut open_count = 0;
                     let initial_offset = offset;
@@ -404,7 +407,7 @@ impl Preprocessor {
                 if let Some(def) = def {
                     effective_defs.insert(def.to_owned());
                 }
-            } else if preprocess1::import_start.parse(Located::new(&line)).is_ok() {
+            } else if preprocess1::import_start.parse(input_new(&line)).is_ok() {
                 let mut import_lines = String::default();
                 let mut open_count = 0;
                 let initial_offset = offset;
@@ -440,20 +443,16 @@ impl Preprocessor {
                     },
                 )?;
             } else if let Some(cap) = {
-                let a = preprocess1::define_import_path
-                    .parse(Located::new(line.trim()))
-                    .ok();
+                let a = preprocess1::define_import_path.parse(input_new(&line)).ok();
                 a
             } {
-                name = Some(line[cap.path].to_string());
+                name = Some(line[cap.path.unwrap()].to_string());
             } else if let Some(cap) = {
-                let a = preprocess1::define_shader_def
-                    .parse(Located::new(line.trim()))
-                    .ok();
+                let a = preprocess1::define_shader_def.parse(input_new(&line)).ok();
                 a
             } {
                 if allow_defines {
-                    let name = line[cap.name].to_string();
+                    let name = line[cap.name.unwrap()].to_string();
 
                     let value = if let Some(val) = cap.value.map(|v| &line[v]) {
                         if let Ok(val) = val.parse::<u32>() {
