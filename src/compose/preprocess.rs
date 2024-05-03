@@ -1,43 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
-use regex::Regex;
 use winnow::Parser;
 
 use super::{
-    comment_strip_iter::replace_comments,
     parse_imports::{parse_imports, substitute_identifiers},
     preprocess1::{self, input_new},
     ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
 };
 
 #[derive(Debug)]
-pub struct Preprocessor {
-    ifdef_regex: Regex,
-    ifndef_regex: Regex,
-    ifop_regex: Regex,
-    else_regex: Regex,
-    endif_regex: Regex,
-    def_regex: Regex,
-    def_regex_delimited: Regex,
-}
-
-impl Default for Preprocessor {
-    fn default() -> Self {
-        Self {
-            ifdef_regex: Regex::new(r"^\s*#\s*(else\s+)?\s*ifdef\s+([\w|\d|_]+)").unwrap(),
-            ifndef_regex: Regex::new(r"^\s*#\s*(else\s+)?\s*ifndef\s+([\w|\d|_]+)").unwrap(),
-            ifop_regex: Regex::new(
-                r"^\s*#\s*(else\s+)?\s*if\s+([\w|\d|_]+)\s*([=!<>]*)\s*([-\w|\d]+)",
-            )
-            .unwrap(),
-            else_regex: Regex::new(r"^\s*#\s*else").unwrap(),
-            endif_regex: Regex::new(r"^\s*#\s*endif").unwrap(),
-            def_regex: Regex::new(r"#\s*([\w|\d|_]+)").unwrap(),
-            def_regex_delimited: Regex::new(r"#\s*\{([\w|\d|_]+)\}").unwrap(),
-        }
-    }
-}
+pub struct Preprocessor;
 
 #[derive(Debug)]
 pub struct PreprocessorMetaData {

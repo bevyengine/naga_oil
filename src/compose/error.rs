@@ -1,4 +1,9 @@
-use std::{borrow::Cow, collections::HashMap, ops::Range};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::{Display, Formatter},
+    ops::Range,
+};
 
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
@@ -113,6 +118,8 @@ pub enum ComposerErrorInner {
     InconsistentShaderDefValue { def: String },
     #[error("Attempted to add a module with no #define_import_path")]
     NoModuleName,
+    #[error("Attempted to add a module with multiple #define_import_path {0}")]
+    MultipleModuleNames(StringWithCommas),
     #[error("source contains internal decoration string, results probably won't be what you expect. if you have a legitimate reason to do this please file a report")]
     DecorationInSource(Range<usize>),
     #[error("naga oil only supports glsl 440 and 450")]
@@ -135,6 +142,45 @@ pub enum ComposerErrorInner {
     },
     #[error("#define statements are only allowed at the start of the top-level shaders")]
     DefineInModule(usize),
+    #[error("failed to preprocess shader {0}")]
+    PreprocessorError(StringsWithNewlines),
+}
+
+#[derive(Debug)]
+pub struct StringsWithNewlines(Vec<String>);
+impl Display for StringsWithNewlines {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (i, value) in self.0.iter().enumerate() {
+            if i != 0 {
+                write!(f, "\n")?;
+            }
+            write!(f, "{}", value)?;
+        }
+        Ok(())
+    }
+}
+impl From<Vec<String>> for StringsWithNewlines {
+    fn from(values: Vec<String>) -> Self {
+        Self(values)
+    }
+}
+#[derive(Debug)]
+pub struct StringWithCommas(Vec<String>);
+impl Display for StringWithCommas {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (i, value) in self.0.iter().enumerate() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", value)?;
+        }
+        Ok(())
+    }
+}
+impl From<Vec<String>> for StringWithCommas {
+    fn from(values: Vec<String>) -> Self {
+        Self(values)
+    }
 }
 
 struct ErrorSources<'a> {
@@ -265,11 +311,19 @@ impl ComposerError {
                     "{path}: no #define_import_path declaration found in composable module"
                 );
             }
+            ComposerErrorInner::MultipleModuleNames(names) => 
+              return format!(
+                    "{path}: multiple #define_import_path declarations found in composable module: {names}"
+                )  
+            ,
             ComposerErrorInner::InvalidIdentifier { at, .. } => (
                 vec![Label::primary((), map_span(at.to_range().unwrap_or(0..0)))
                     .with_message(self.inner.to_string())],
                 vec![],
             ),
+            ComposerErrorInner::PreprocessorError(e) => {
+                return format!("{path}: preprocessor errors: {e}");
+            }
         };
 
         let diagnostic = Diagnostic::error()

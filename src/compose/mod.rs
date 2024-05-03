@@ -130,9 +130,13 @@ use naga::EntryPoint;
 use regex::Regex;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use tracing::{debug, trace};
+use winnow::RecoverableParser;
 
 use crate::{
-    compose::preprocess::{PreprocessOutput, PreprocessorMetaData},
+    compose::{
+        preprocess::{PreprocessOutput, PreprocessorMetaData},
+        preprocess1::{DefineImportPath, PreprocessorPart},
+    },
     derive::DerivedModule,
     redirect::Redirector,
 };
@@ -140,7 +144,6 @@ use crate::{
 pub use self::error::{ComposerError, ComposerErrorInner, ErrSource};
 use self::preprocess::Preprocessor;
 
-pub mod comment_strip_iter;
 pub mod error;
 pub mod parse_imports;
 pub mod preprocess;
@@ -343,7 +346,7 @@ impl Default for Composer {
             capabilities: Default::default(),
             module_sets: Default::default(),
             module_index: Default::default(),
-            preprocessor: Preprocessor::default(),
+            preprocessor: Preprocessor,
             check_decoration_regex: Regex::new(
                 format!(
                     "({}|{})",
@@ -1429,24 +1432,51 @@ impl Composer {
 
         let substituted_source = self.sanitize_and_set_auto_bindings(source);
 
-        let PreprocessorMetaData {
-            name: module_name,
-            mut imports,
-            mut effective_defs,
-            ..
-        } = self
-            .preprocessor
-            .get_preprocessor_metadata(&substituted_source, false)
-            .map_err(|inner| ComposerError {
-                inner,
+        let (_, parsed, errors) = preprocess1::preprocess
+            .recoverable_parse(winnow::Located::new(substituted_source.as_str()));
+
+        if !errors.is_empty() {
+            return Err(ComposerError {
+                inner: ComposerErrorInner::PreprocessorError(
+                    // TODO: Prettier error messages
+                    errors
+                        .into_iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<String>>()
+                        .into(),
+                ),
                 source: ErrSource::Constructing {
                     path: file_path.to_owned(),
                     source: source.to_owned(),
                     offset: 0,
                 },
-            })?;
-        let module_name = as_name.or(module_name);
-        if module_name.is_none() {
+            });
+        }
+        let parsed = match parsed {
+            Some(parsed) => parsed,
+            None => {
+                return Err(ComposerError {
+                    inner: ComposerErrorInner::PreprocessorError(
+                        vec!["preprocessor failed to parse source".to_owned()].into(),
+                    ),
+                    source: ErrSource::Constructing {
+                        path: file_path.to_owned(),
+                        source: source.to_owned(),
+                        offset: 0,
+                    },
+                });
+            }
+        };
+
+        let module_names = as_name
+            .into_iter()
+            .chain(
+                parsed
+                    .get_module_names(&substituted_source)
+                    .map(|v| v.to_owned()),
+            )
+            .collect::<Vec<_>>();
+        if module_names.len() == 0 {
             return Err(ComposerError {
                 inner: ComposerErrorInner::NoModuleName,
                 source: ErrSource::Constructing {
@@ -1456,11 +1486,39 @@ impl Composer {
                 },
             });
         }
-        let module_name = module_name.unwrap();
+        if module_names.len() > 1 {
+            return Err(ComposerError {
+                inner: ComposerErrorInner::MultipleModuleNames(module_names.into()),
+                source: ErrSource::Constructing {
+                    path: file_path.to_owned(),
+                    source: source.to_owned(),
+                    offset: 0, // TODO: Return the offset of the second module name
+                },
+            });
+        }
+        let module_name = module_names.into_iter().next().unwrap();
+
+        let all_imports = parsed.get_imports(&substituted_source);
+
+        let used_defs = parsed.get_used_defs(&substituted_source);
+
+        /*
+        // TODO: What are the the ImportDefWithOffset s?
+        let imports: Vec<ImportDefWithOffset>;
+        // TODO: Why are effective_defs so weird?
+        let effective_defs: HashSet<String>;
+        let PreprocessorMetaData {
+            mut imports,
+            mut effective_defs,
+            ..
+        } = self
+            .preprocessor
+            .get_preprocessor_metadata(&substituted_source, false)
+             */
 
         debug!(
             "adding module definition for {} with defs: {:?}",
-            module_name, shader_defs
+            module_name, used_defs
         );
 
         // add custom imports
@@ -1803,9 +1861,6 @@ impl Composer {
     }
 }
 
-static PREPROCESSOR: once_cell::sync::Lazy<Preprocessor> =
-    once_cell::sync::Lazy::new(Preprocessor::default);
-
 /// Get module name and all required imports (ignoring shader_defs) from a shader string
 pub fn get_preprocessor_data(
     source: &str,
@@ -1819,7 +1874,7 @@ pub fn get_preprocessor_data(
         imports,
         defines,
         ..
-    }) = PREPROCESSOR.get_preprocessor_metadata(source, true)
+    }) = Preprocessor.get_preprocessor_metadata(source, true)
     {
         (
             name,
