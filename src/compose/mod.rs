@@ -202,6 +202,8 @@ impl ShaderDefValue {
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub struct OwnedShaderDefs(BTreeMap<String, ShaderDefValue>);
 
+/// Modules are compiled differently based on the shader def values provided.
+/// So a single source code can actually correspond to multiple modules.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct ModuleKey(OwnedShaderDefs);
 
@@ -298,15 +300,26 @@ impl ComposableModuleDefinition {
     }
 }
 
+/// #import foo::bar::{a, b, c} would be represented as
+/// ```no_run
+/// ImportDefinition {
+///    import: "foo::bar",
+///    items: vec!["a", "b", "c"]
+/// }
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportDefinition {
+    /// Module name
     pub import: String,
+    /// All the items that were imported from the module
     pub items: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ImportDefWithOffset {
+    /// Module and items imported
     definition: ImportDefinition,
+    /// Where in the source the import was declared
     offset: usize,
 }
 
@@ -316,6 +329,7 @@ pub struct ImportDefWithOffset {
 #[derive(Debug)]
 pub struct Composer {
     pub validate: bool,
+    /// All modules, where each module can actually correspond to multiple modules that are built with different shader defs
     pub module_sets: HashMap<String, ComposableModuleDefinition>,
     pub module_index: HashMap<usize, String>,
     pub capabilities: naga::valid::Capabilities,
@@ -1354,20 +1368,34 @@ impl Composer {
 
 #[derive(Default)]
 pub struct ComposableModuleDescriptor<'a> {
+    /// Source code of the module
     pub source: &'a str,
+    /// File path of the module, useful for error reporting
     pub file_path: &'a str,
+    /// WGSL or GLSL
     pub language: ShaderLanguage,
+    /// Overriding/setting the name for this module. Useful for modules that either
+    /// - do not specify #define_import_path
+    /// - have an inconvenient name
     pub as_name: Option<String>,
+    /// Extra imports that are implicitly added. Like Bevy globals
     pub additional_imports: &'a [ImportDefinition],
+    /// extra shader def values bound to this module
     pub shader_defs: HashMap<String, ShaderDefValue>,
 }
 
 #[derive(Default)]
 pub struct NagaModuleDescriptor<'a> {
+    /// Source of main module
     pub source: &'a str,
+    /// File path of main module, useful for error reporting
     pub file_path: &'a str,
+    /// Shader language, but split into separate stages (vertex/fragment)
     pub shader_type: ShaderType,
+    /// #define values. Specified at the last moment to allow for runtime values.
+    /// Apply to all modules.
     pub shader_defs: HashMap<String, ShaderDefValue>,
+    /// Extra imports that are implicitly added. Like Bevy globals
     pub additional_imports: &'a [ImportDefinition],
 }
 
@@ -1563,6 +1591,7 @@ impl Composer {
 
         let sanitized_source = self.sanitize_and_set_auto_bindings(source);
 
+        // Get all possible imports
         let PreprocessorMetaData {
             name,
             defines,
@@ -1638,6 +1667,7 @@ impl Composer {
             modules: Default::default(),
         };
 
+        // Get the concrete imports, given the shader defs
         let PreprocessOutput {
             preprocessed_source,
             imports,

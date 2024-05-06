@@ -12,6 +12,7 @@ and probably less useful externally:
 the compose module allows construction of shaders from modules (which are themselves shaders).
 
 it does this by treating shaders as modules, and 
+- preprocessing each module
 - building each module independently to naga IR
 - creating "header" files for each supported language, which are used to build dependent modules/shaders
 - making final shaders by combining the shader IR with the IR for imported modules
@@ -155,7 +156,7 @@ the `#if` directive requires a def name, an operator, and a value for comparison
 - the operator must be one of `==`, `!=`, `>=`, `>`, `<`, `<=`
 - the value must be an integer literal if comparing to a `ShaderDefValue::Int` or `ShaderDefValue::Uint`, or `true` or `false` if comparing to a `ShaderDef::Bool`.
 
-shader defs can also be used in the shader source with `#SHADER_DEF` or `#{SHADER_DEF}`, and will be substituted for their value.
+shader defs can be used in the shader source with `#SHADER_DEF` or `#{SHADER_DEF}`, and will be substituted for their value. unlike `#define` in C, the shader defs will not aggressively replace all instances of the def name in the shader source. one has to explicitly refer to the def name in the source with the `#{SHADER_DEF}` directive.
 
 the preprocessor branching directives (`ifdef`, `ifndef` and `if`) can be prefixed with `#else` to create more complex control flows:
 
@@ -176,6 +177,7 @@ shader defs can be created or overridden at the start of the top-level shader wi
 #define USER_NUMBER 42
 ```
 the created value will default to `true` if not specified.
+unlike `#define` in C, the value of the def is evaluated once at the very start of shader compilation, and acts as a global constant for the rest of the compilation.
 
 ## error reporting
 
