@@ -68,10 +68,10 @@ impl Redirector {
                 | Statement::Store { .. }
                 | Statement::ImageStore { .. }
                 | Statement::Atomic { .. }
-                | Statement::RayQuery { .. } => (),
-                Statement::SubgroupBallot { result, predicate } => todo!(),
-                Statement::SubgroupGather { mode, argument, result } => todo!(),
-                Statement::SubgroupCollectiveOperation { op, collective_op, argument, result } => todo!(),
+                | Statement::RayQuery { .. }
+                | Statement::SubgroupBallot { .. }
+                | Statement::SubgroupGather { .. }
+                | Statement::SubgroupCollectiveOperation { .. } => (),
             }
         }
     }
