@@ -330,6 +330,7 @@ pub struct ImportDefWithOffset {
 pub struct Composer {
     pub validate: bool,
     /// All modules, where each module can actually correspond to multiple modules that are built with different shader defs
+    /// We're caching them across multiple calls to `make_naga_module`
     pub module_sets: HashMap<String, ComposableModuleDefinition>,
     pub module_index: HashMap<usize, String>,
     pub capabilities: naga::valid::Capabilities,
@@ -1378,7 +1379,7 @@ pub struct ComposableModuleDescriptor<'a> {
     /// - do not specify #define_import_path
     /// - have an inconvenient name
     pub as_name: Option<String>,
-    /// Extra imports that are implicitly added. Like Bevy globals
+    /// Extra imports that are implicitly added.
     pub additional_imports: &'a [ImportDefinition],
     /// extra shader def values bound to this module
     pub shader_defs: HashMap<String, ShaderDefValue>,
@@ -1395,7 +1396,7 @@ pub struct NagaModuleDescriptor<'a> {
     /// #define values. Specified at the last moment to allow for runtime values.
     /// Apply to all modules.
     pub shader_defs: HashMap<String, ShaderDefValue>,
-    /// Extra imports that are implicitly added. Like Bevy globals
+    /// Extra imports that are implicitly added.
     pub additional_imports: &'a [ImportDefinition],
 }
 
