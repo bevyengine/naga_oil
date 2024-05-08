@@ -1,1534 +1,791 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::HashSet, ops::Range};
 
-use indexmap::IndexMap;
-use winnow::Parser;
-
-use super::{
-    parse_imports::{parse_imports, substitute_identifiers},
-    preprocess1::{self, input_new},
-    ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
+use winnow::{
+    combinator::{alt, empty, eof, fail, opt, peek, preceded, repeat, separated, seq, terminated},
+    error::{ContextError, StrContext},
+    stream::Recoverable,
+    token::{any, none_of, one_of, take_till, take_while},
+    Located, PResult, Parser,
 };
 
-#[derive(Debug)]
-pub struct Preprocessor;
+use super::{composer::ImportDefWithOffset, ShaderDefValue};
 
-#[derive(Debug)]
-pub struct PreprocessorMetaData {
-    pub name: Option<String>,
-    pub imports: Vec<ImportDefWithOffset>,
-    pub defines: HashMap<String, ShaderDefValue>,
-    pub effective_defs: HashSet<String>,
-}
+/**
+ * The abstract syntax trees do not include spaces or comments. They are implicity there between adjacent tokens.
+ * It is also missing a lot of filler tokens, like semicolons, commas, and braces.
+ * The syntax tree only has ranges, and needs the original source code to extract the actual text.
+ *
+ * If we ever want to have a full concrete syntax tree, we should look into https://github.com/domenicquirl/cstree
+ */
 
-enum ScopeLevel {
-    Active,           // conditions have been met
-    PreviouslyActive, // conditions have previously been met
-    NotActive,        // no conditions yet met
-}
-
-struct Scope(Vec<ScopeLevel>);
-
-impl Scope {
-    fn new() -> Self {
-        Self(vec![ScopeLevel::Active])
-    }
-
-    fn branch(
-        &mut self,
-        is_else: bool,
-        condition: bool,
-        offset: usize,
-    ) -> Result<(), ComposerErrorInner> {
-        if is_else {
-            let prev_scope = self.0.pop().unwrap();
-            let parent_scope = self
-                .0
-                .last()
-                .ok_or(ComposerErrorInner::ElseWithoutCondition(offset))?;
-            let new_scope = if !matches!(parent_scope, ScopeLevel::Active) {
-                ScopeLevel::NotActive
-            } else if !matches!(prev_scope, ScopeLevel::NotActive) {
-                ScopeLevel::PreviouslyActive
-            } else if condition {
-                ScopeLevel::Active
-            } else {
-                ScopeLevel::NotActive
-            };
-
-            self.0.push(new_scope);
-        } else {
-            let parent_scope = self.0.last().unwrap_or(&ScopeLevel::Active);
-            let new_scope = if matches!(parent_scope, ScopeLevel::Active) && condition {
-                ScopeLevel::Active
-            } else {
-                ScopeLevel::NotActive
-            };
-
-            self.0.push(new_scope);
-        }
-
-        Ok(())
-    }
-
-    fn pop(&mut self, offset: usize) -> Result<(), ComposerErrorInner> {
-        self.0.pop();
-        if self.0.is_empty() {
-            Err(ComposerErrorInner::TooManyEndIfs(offset))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn active(&self) -> bool {
-        matches!(self.0.last().unwrap(), ScopeLevel::Active)
-    }
-
-    fn finish(&self, offset: usize) -> Result<(), ComposerErrorInner> {
-        if self.0.len() != 1 {
-            Err(ComposerErrorInner::NotEnoughEndIfs(offset))
-        } else {
-            Ok(())
-        }
-    }
+pub type Input<'a> = Recoverable<Located<&'a str>, ContextError>;
+pub fn input_new(input: &str) -> Input {
+    Recoverable::new(Located::new(input))
 }
 
 #[derive(Debug)]
-pub struct PreprocessOutput {
-    pub preprocessed_source: String,
-    pub imports: Vec<ImportDefWithOffset>,
+pub struct Preprocessed {
+    pub parts: Vec<PreprocessorPart>,
 }
+impl Preprocessed {
+    pub fn get_module_names<'a, 'b>(&'b self, input: &'a str) -> impl Iterator<Item = &'a str> + 'b
+    where
+        'a: 'b,
+    {
+        self.parts
+            .iter()
+            .filter_map(|v: &PreprocessorPart| match v {
+                PreprocessorPart::DefineImportPath(DefineImportPath { path }) => {
+                    path.as_ref().map(|v| &input[v.clone()])
+                }
+                _ => None,
+            })
+    }
+    pub fn get_imports(&self, input: &str) -> Vec<FlattenedImport> {
+        self.parts
+            .iter()
+            .filter_map(move |v| match v {
+                PreprocessorPart::Import(v) => v.get_import(input),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>()
+    }
 
-impl Preprocessor {
-    fn check_scope<'a>(
-        &self,
-        shader_defs: &HashMap<String, ShaderDefValue>,
-        line: &'a str,
-        scope: Option<&mut Scope>,
-        offset: usize,
-    ) -> Result<(bool, Option<&'a str>), ComposerErrorInner> {
-        if let Some(cap) = self.ifdef_regex.captures(line) {
-            let is_else = cap.get(1).is_some();
-            let def = cap.get(2).unwrap().as_str();
-            let cond = shader_defs.contains_key(def);
-            scope.map_or(Ok(()), |scope| scope.branch(is_else, cond, offset))?;
-            return Ok((true, Some(def)));
-        } else if let Some(cap) = self.ifndef_regex.captures(line) {
-            let is_else = cap.get(1).is_some();
-            let def = cap.get(2).unwrap().as_str();
-            let cond = !shader_defs.contains_key(def);
-            scope.map_or(Ok(()), |scope| scope.branch(is_else, cond, offset))?;
-            return Ok((true, Some(def)));
-        } else if let Some(cap) = self.ifop_regex.captures(line) {
-            let is_else = cap.get(1).is_some();
-            let def = cap.get(2).unwrap().as_str();
-            let op = cap.get(3).unwrap();
-            let val = cap.get(4).unwrap();
+    pub fn get_used_defs(&self, input: &str) -> HashSet<String> {
+        self.parts
+            .iter()
+            .filter_map(|v| match v {
+                PreprocessorPart::If(v) => v.name.as_ref(),
+                PreprocessorPart::IfOp(v) => v.name.as_ref(),
+                PreprocessorPart::UseDefine(v) => v.name.as_ref(),
+                _ => None,
+            })
+            .map(|v| input[v.clone()].to_owned())
+            .collect()
+    }
 
-            if scope.is_none() {
-                // don't try to evaluate if we don't have a scope
-                return Ok((true, Some(def)));
+    pub fn get_defined_defs<'a>(
+        &'a self,
+        input: &'a str,
+    ) -> impl Iterator<Item = (String, ShaderDefValue)> + 'a {
+        self.parts.iter().filter_map(|v| match v {
+            PreprocessorPart::DefineShaderDef(v) => {
+                let name = match v.name.as_ref() {
+                    Some(v) => input[v.clone()].to_owned(),
+                    None => return None,
+                };
+                let value = match v.value.as_ref() {
+                    Some(v) => ShaderDefValue::parse(&input[v.clone()]),
+                    None => ShaderDefValue::default(),
+                };
+                Some((name, value))
             }
+            _ => None,
+        })
+    }
+}
 
-            fn act_on<T: Eq + Ord>(
-                a: T,
-                b: T,
-                op: &str,
-                pos: usize,
-            ) -> Result<bool, ComposerErrorInner> {
-                match op {
-                    "==" => Ok(a == b),
-                    "!=" => Ok(a != b),
-                    ">" => Ok(a > b),
-                    ">=" => Ok(a >= b),
-                    "<" => Ok(a < b),
-                    "<=" => Ok(a <= b),
-                    _ => Err(ComposerErrorInner::UnknownShaderDefOperator {
-                        pos,
-                        operator: op.to_string(),
+impl ImportDirective {
+    pub fn get_import(&self, input: &str) -> Option<Vec<FlattenedImport>> {
+        fn to_stack<'a>(input: &'a str, ranges: &[Range<usize>]) -> Vec<&'a str> {
+            ranges
+                .iter()
+                .map(|range| &input[range.clone()])
+                .collect::<Vec<_>>()
+        }
+
+        fn walk_import_tree<'a>(
+            input: &'a str,
+            tree: &ImportTree,
+            stack: &[&'a str],
+            offset: usize,
+        ) -> Vec<FlattenedImport> {
+            let (alias_range, path_ranges) = match tree {
+                ImportTree::Path(path_ranges) => (None, path_ranges),
+                ImportTree::Alias { path, alias } => (alias.clone(), path),
+                ImportTree::Children { path, children } => {
+                    let extended_stack = [stack, &to_stack(input, path)].concat();
+                    return children
+                        .iter()
+                        .flat_map(|child| walk_import_tree(input, child, &extended_stack, offset))
+                        .collect();
+                }
+            };
+
+            let alias = alias_range.map(|v| input[v.clone()].to_owned());
+            let path = [stack, &to_stack(input, &path_ranges)].concat().join("::");
+            vec![FlattenedImport {
+                alias,
+                path,
+                offset,
+            }]
+        }
+
+        match &self.tree {
+            Some((tree, range)) => Some(walk_import_tree(input, tree, &[], range.start)),
+            None => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedIfOp<'a> {
+    pub is_else_if: bool,
+    pub name: &'a str,
+    pub op: &'a str,
+    pub value: &'a str,
+}
+
+impl IfOpDirective {
+    pub fn resolve<'a>(&self, input: &'a str) -> Option<ResolvedIfOp<'a>> {
+        Some(ResolvedIfOp {
+            is_else_if: self.is_else_if,
+            name: &input[self.name.as_ref()?.clone()],
+            op: &input[self.op.as_ref()?.clone()],
+            value: &input[self.value.as_ref()?.clone()],
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct FlattenedImport {
+    pub offset: usize,
+    pub path: String,
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum PreprocessorPart {
+    Version(VersionDirective),
+    If(IfDefDirective),
+    IfOp(IfOpDirective),
+    Else(ElseDirective),
+    EndIf(EndIfDirective),
+    UseDefine(UseDefineDirective),
+    DefineShaderDef(DefineShaderDef),
+    DefineImportPath(DefineImportPath),
+    Import(ImportDirective),
+    UnknownDirective(Range<usize>),
+    /// Normal shader code
+    Text(Range<usize>),
+}
+
+// Note: This is a public API that lower level tools may use. It's a recoverable parser.
+pub fn preprocess(input: &mut Input<'_>) -> PResult<Preprocessed> {
+    // All of the directives start with a #.
+    // And most of the directives have to be on their own line.
+    let mut parts = Vec::new();
+    let mut start_text = empty.span().parse_next(input)?.start;
+    loop {
+        // I'm at the start of a line. Let's try parsing a preprocessor directive.
+        if let Some(_) = opt(spaces_single_line).parse_next(input)? {
+            if let Some(_) = opt(peek('#').span()).parse_next(input)? {
+                // It's a preprocessor directive
+                let (part, span): (Option<_>, _) = alt((
+                    version.map(PreprocessorPart::Version),
+                    if_directive.map(|v| match v {
+                        IfDirective::If(v) => PreprocessorPart::If(v),
+                        IfDirective::IfOp(v) => PreprocessorPart::IfOp(v),
+                        IfDirective::Else(v) => PreprocessorPart::Else(v),
                     }),
-                }
+                    end_if_directive.map(PreprocessorPart::EndIf),
+                    use_define_directive.map(PreprocessorPart::UseDefine),
+                    define_import_path.map(PreprocessorPart::DefineImportPath),
+                    define_shader_def.map(PreprocessorPart::DefineShaderDef),
+                    import_directive.map(PreprocessorPart::Import),
+                    fail.context(StrContext::Label("Unknown directive")),
+                ))
+                .resume_after(take_till(0.., is_newline_start).map(|_| ()))
+                .with_span()
+                .parse_next(input)?;
+                parts.push(PreprocessorPart::Text(start_text..span.start));
+                start_text = span.end;
+                parts.push(part.unwrap_or_else(move || PreprocessorPart::UnknownDirective(span)));
+                continue;
             }
-
-            let def_value = shader_defs
-                .get(def)
-                .ok_or(ComposerErrorInner::UnknownShaderDef {
-                    pos: offset,
-                    shader_def_name: def.to_string(),
-                })?;
-
-            let invalid_def = |ty: &str| ComposerErrorInner::InvalidShaderDefComparisonValue {
-                pos: offset,
-                shader_def_name: def.to_string(),
-                value: val.as_str().to_string(),
-                expected: ty.to_string(),
-            };
-
-            let new_scope = match def_value {
-                ShaderDefValue::Bool(def_value) => {
-                    let val = val.as_str().parse().map_err(|_| invalid_def("bool"))?;
-                    act_on(*def_value, val, op.as_str(), offset)?
-                }
-                ShaderDefValue::Int(def_value) => {
-                    let val = val.as_str().parse().map_err(|_| invalid_def("int"))?;
-                    act_on(*def_value, val, op.as_str(), offset)?
-                }
-                ShaderDefValue::UInt(def_value) => {
-                    let val = val.as_str().parse().map_err(|_| invalid_def("uint"))?;
-                    act_on(*def_value, val, op.as_str(), offset)?
-                }
-            };
-
-            scope.map_or(Ok(()), |scope| scope.branch(is_else, new_scope, offset))?;
-            return Ok((true, Some(def)));
-        } else if self.else_regex.is_match(line) {
-            scope.map_or(Ok(()), |scope| scope.branch(true, true, offset))?;
-            return Ok((true, None));
-        } else if self.endif_regex.is_match(line) {
-            scope.map_or(Ok(()), |scope| scope.pop(offset))?;
-            return Ok((true, None));
         }
 
-        Ok((false, None))
-    }
+        // Normal line
+        loop {
+            let text = take_till(1.., |c: char| is_newline_start(c) || c == '#')
+                .span()
+                .parse_next(input)?;
 
-    // process #if[(n)?def]? / #else / #endif preprocessor directives,
-    // strip module name and imports
-    // also strip "#version xxx"
-    // replace items with resolved decorated names
-    pub fn preprocess(
-        &self,
-        shader_str: &str,
-        shader_defs: &HashMap<String, ShaderDefValue>,
-        validate_len: bool,
-    ) -> Result<PreprocessOutput, ComposerErrorInner> {
-        let mut declared_imports = IndexMap::new();
-        let mut used_imports = IndexMap::new();
-        let mut scope = Scope::new();
-        let mut final_string = String::new();
-        let mut offset = 0;
-
-        #[cfg(debug)]
-        let len = shader_str.len();
-
-        // this code broadly stolen from bevy_render::ShaderProcessor
-        let mut lines = replace_comments(shader_str).peekable();
-
-        while let Some((mut line, original_line)) = lines.next() {
-            let mut output = false;
-            let trimmed_line = line.trim();
-
-            if let Some(cap) = {
-                let a = preprocess1::version.parse(input_new(trimmed_line)).ok();
-                a
-            } {
-                let version_number = cap.version_number(trimmed_line);
-                if version_number != Some(440) && version_number != Some(450) {
-                    return Err(ComposerErrorInner::GlslInvalidVersion(offset));
-                }
-            } else if self
-                .check_scope(shader_defs, &line, Some(&mut scope), offset)?
-                .0
-                || preprocess1::define_import_path
-                    .parse(input_new(trimmed_line))
-                    .is_ok()
-                || preprocess1::define_shader_def
-                    .parse(input_new(trimmed_line))
-                    .is_ok()
+            if let Some(_) = opt(new_line).parse_next(input)? {
+                // Nice, we finished a line
+                break;
+            } else if let Some((use_define, span)) =
+                opt(use_define_directive.with_span()).parse_next(input)?
             {
-                // ignore
-            } else if scope.active() {
-                if preprocess1::import_start.parse(input_new(&line)).is_ok() {
-                    let mut import_lines = String::default();
-                    let mut open_count = 0;
-                    let initial_offset = offset;
-
-                    loop {
-                        // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
-                        final_string.extend(std::iter::repeat(" ").take(line.len()));
-                        offset += line.len() + 1;
-
-                        // PERF: Ideally we don't do multiple `match_indices` passes over `line`
-                        // in addition to the final pass for the import parse
-                        open_count += line.match_indices('{').count();
-                        open_count = open_count.saturating_sub(line.match_indices('}').count());
-
-                        // PERF: it's bad that we allocate here. ideally we would use something like
-                        //     let import_lines = &shader_str[initial_offset..offset]
-                        // but we need the comments removed, and the iterator approach doesn't make that easy
-                        import_lines.push_str(&line);
-                        import_lines.push('\n');
-
-                        if open_count == 0 || lines.peek().is_none() {
-                            break;
-                        }
-
-                        final_string.push('\n');
-                        line = lines.next().unwrap().0;
-                    }
-
-                    parse_imports(import_lines.as_str(), &mut declared_imports).map_err(
-                        |(err, line_offset)| {
-                            ComposerErrorInner::ImportParseError(
-                                err.to_owned(),
-                                initial_offset + line_offset,
-                            )
-                        },
-                    )?;
-                    output = true;
-                } else {
-                    let replaced_lines = [original_line, &line].map(|input| {
-                        let mut output = input.to_string();
-                        for capture in self.def_regex.captures_iter(input) {
-                            let def = capture.get(1).unwrap();
-                            if let Some(def) = shader_defs.get(def.as_str()) {
-                                output = self
-                                    .def_regex
-                                    .replace(&output, def.value_as_string())
-                                    .to_string();
-                            }
-                        }
-                        for capture in self.def_regex_delimited.captures_iter(input) {
-                            let def = capture.get(1).unwrap();
-                            if let Some(def) = shader_defs.get(def.as_str()) {
-                                output = self
-                                    .def_regex_delimited
-                                    .replace(&output, def.value_as_string())
-                                    .to_string();
-                            }
-                        }
-                        output
-                    });
-
-                    let original_line = &replaced_lines[0];
-                    let decommented_line = &replaced_lines[1];
-
-                    // we don't want to capture imports from comments so we run using a dummy used_imports, and disregard any errors
-                    let item_replaced_line = substitute_identifiers(
-                        original_line,
-                        offset,
-                        &declared_imports,
-                        &mut Default::default(),
-                        true,
-                    )
-                    .unwrap();
-                    // we also run against the de-commented line to replace real imports, and throw an error if appropriate
-                    let _ = substitute_identifiers(
-                        decommented_line,
-                        offset,
-                        &declared_imports,
-                        &mut used_imports,
-                        false,
-                    )
-                    .map_err(|pos| {
-                        ComposerErrorInner::ImportParseError(
-                            "Ambiguous import path for item".to_owned(),
-                            pos,
-                        )
-                    })?;
-
-                    final_string.push_str(&item_replaced_line);
-                    let diff = line.len().saturating_sub(item_replaced_line.len());
-                    final_string.extend(std::iter::repeat(" ").take(diff));
-                    offset += original_line.len() + 1;
-                    output = true;
-                }
+                parts.push(PreprocessorPart::Text(start_text..span.start));
+                start_text = span.end;
+                parts.push(PreprocessorPart::UseDefine(use_define));
+                // Continue parsing the line
+            } else if let Some(_) = opt(eof).parse_next(input)? {
+                // We reached the end of the file
+                parts.push(PreprocessorPart::Text(start_text..text.end));
+                return Ok(Preprocessed { parts });
+            } else {
+                // It's a # that we don't care about
+                // Skip it and continue parsing the line
+                let _ = any.parse_next(input)?;
             }
-
-            if !output {
-                // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
-                final_string.extend(std::iter::repeat(" ").take(line.len()));
-                offset += line.len() + 1;
-            }
-            final_string.push('\n');
         }
+    }
+}
 
-        scope.finish(offset)?;
+#[derive(Debug, Clone)]
+pub struct VersionDirective {
+    version: Option<Range<usize>>,
+}
+impl VersionDirective {
+    pub fn version_number(&self, input: &str) -> Option<u32> {
+        self.version
+            .as_ref()
+            .and_then(|v| (&input[v.clone()]).parse::<u32>().ok())
+    }
+}
 
-        #[cfg(debug)]
-        if validate_len {
-            let revised_len = final_string.len();
-            assert_eq!(len, revised_len);
+pub fn version(input: &mut Input<'_>) -> PResult<VersionDirective> {
+    seq! {VersionDirective{
+        _: "#version".span(),
+        _: spaces_single_line.resume_after(empty),
+        version: take_while(1.., |c:char| c.is_ascii_digit()).span().resume_after(empty),
+        _: spaces_until_new_line
+    }}
+    .parse_next(input)
+}
+
+/// Note: We're disallowing spaces between the `#` and the `ifdef`.
+/// `#ifdef {name}` or `#else ifdef {name}` or `#ifndef {name}` or `#else ifndef {name`
+#[derive(Debug, Clone)]
+pub struct IfDefDirective {
+    pub is_else_if: bool,
+    pub is_not: bool,
+    pub name: Option<Range<usize>>,
+}
+
+impl IfDefDirective {
+    pub fn name<'a>(&'a self, input: &'a str) -> Option<&'a str> {
+        self.name.as_ref().map(|v| &input[v.clone()])
+    }
+}
+
+/// `#ifop {name} {op} {value}` or `#else ifop {name} {op} {value}`
+#[derive(Debug, Clone)]
+pub struct IfOpDirective {
+    pub is_else_if: bool,
+    pub name: Option<Range<usize>>,
+    pub op: Option<Range<usize>>,
+    pub value: Option<Range<usize>>,
+}
+
+pub enum IfDirective {
+    If(IfDefDirective),
+    IfOp(IfOpDirective),
+    Else(ElseDirective),
+}
+
+pub fn if_directive(input: &mut Input<'_>) -> PResult<IfDirective> {
+    #[derive(PartialEq, Eq)]
+    enum Start {
+        IfDef,
+        IfNotDef,
+        IfOp,
+        Else,
+    }
+    let (start, is_else) = alt((
+        "#ifop".map(|_| (Start::IfOp, false)),
+        "#ifdef".map(|_| (Start::IfDef, false)),
+        "#ifndef".map(|_| (Start::IfNotDef, false)),
+        (
+            "#else",
+            spaces_single_line.resume_after(empty),
+            alt((
+                "ifdef".map(|_| Start::IfDef),
+                "ifndef".map(|_| Start::IfNotDef),
+                "ifop".map(|_| Start::IfOp),
+                spaces_until_new_line.map(|_| Start::Else),
+            )),
+        )
+            .map(|(_, _, next)| (next, true)),
+    ))
+    .parse_next(input)?;
+
+    match start {
+        Start::IfDef | Start::IfNotDef => {
+            let _ = spaces_single_line.resume_after(empty).parse_next(input)?;
+            let name = shader_def_name.resume_after(empty).parse_next(input)?;
+            let _ = spaces_until_new_line.parse_next(input)?;
+            Ok(IfDirective::If(IfDefDirective {
+                is_else_if: is_else,
+                is_not: start == Start::IfNotDef,
+                name,
+            }))
         }
-        #[cfg(not(debug))]
-        let _ = validate_len;
+        Start::IfOp => {
+            let _ = spaces_single_line.resume_after(empty).parse_next(input)?;
+            let name = shader_def_name.resume_after(empty).parse_next(input)?;
+            let _ = opt(spaces_single_line).parse_next(input)?;
+            let op = alt(("==", "!=", "<", "<=", ">", ">="))
+                .span()
+                .resume_after(empty)
+                .parse_next(input)?;
+            let _ = opt(spaces_single_line).parse_next(input)?;
+            let value = shader_def_value.resume_after(empty).parse_next(input)?;
+            let _ = spaces_until_new_line.parse_next(input)?;
+            Ok(IfDirective::IfOp(IfOpDirective {
+                is_else_if: is_else,
+                name,
+                op,
+                value,
+            }))
+        }
+        Start::Else => Ok(IfDirective::Else(ElseDirective)),
+    }
+}
 
-        Ok(PreprocessOutput {
-            preprocessed_source: final_string,
-            imports: used_imports.into_values().collect(),
-        })
+/// `#else`
+#[derive(Debug, Clone)]
+pub struct ElseDirective;
+
+/// `#endif`
+#[derive(Debug, Clone)]
+pub struct EndIfDirective;
+
+pub fn end_if_directive(input: &mut Input<'_>) -> PResult<EndIfDirective> {
+    seq! {EndIfDirective{
+        _: "#endif",
+        _: spaces_single_line.resume_after(empty),
+        _: spaces_until_new_line
+    }}
+    .parse_next(input)
+}
+
+/// Note: We're disallowing the previous `#ANYTHING` syntax, since it's rarely used and error prone     
+/// (a misspelled `#inport` would get mistaken for a `#ANYTHING``).
+/// `#{name of defined value}``
+#[derive(Debug, Clone)]
+pub struct UseDefineDirective {
+    pub name: Option<Range<usize>>,
+}
+
+impl UseDefineDirective {
+    pub fn name<'a>(&'a self, input: &'a str) -> Option<&'a str> {
+        self.name.as_ref().map(|v| &input[v.clone()])
+    }
+}
+
+/// Remember that this one doesn't need to be on its own line
+pub fn use_define_directive(input: &mut Input<'_>) -> PResult<UseDefineDirective> {
+    seq! {UseDefineDirective{
+        _: "#{",
+        _: spaces_single_line.resume_after(empty),
+        name: shader_def_name.resume_after(empty),
+        _: spaces_single_line.resume_after(empty),
+        _: "}".resume_after(empty)
+    }}
+    .parse_next(input)
+}
+
+/// `#define {name} {value}`, except it can only be used with other preprocessor macros.
+/// Unlike its C cousin, it doesn't aggressively replace text.
+#[derive(Debug, Clone)]
+pub struct DefineShaderDef {
+    pub name: Option<Range<usize>>,
+    pub value: Option<Range<usize>>,
+}
+
+pub fn define_shader_def(input: &mut Input<'_>) -> PResult<DefineShaderDef> {
+    // Technically I'm changing the #define behaviour
+    // I'm no longer allowing redefining numbers, like #define 3 a|b
+    seq! {DefineShaderDef{
+        _: "#define",
+        _: spaces_single_line.resume_after(empty),
+        name: shader_def_name.resume_after(empty),
+        _: spaces_single_line.resume_after(empty),
+        value: opt(shader_def_value),
+        _: spaces_until_new_line
+    }}
+    .parse_next(input)
+}
+
+fn shader_def_name(input: &mut Input<'_>) -> PResult<Range<usize>> {
+    (
+        one_of(|c: char| c.is_ascii_alphabetic() || c == '_'),
+        take_while(0.., |c: char| c.is_ascii_alphanumeric() || c == '_'),
+    )
+        .span()
+        .parse_next(input)
+}
+
+fn shader_def_value(input: &mut Input<'_>) -> PResult<Range<usize>> {
+    take_while(1.., |c: char| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    })
+    .span()
+    .parse_next(input)
+}
+
+#[derive(Debug, Clone)]
+pub struct DefineImportPath {
+    pub path: Option<Range<usize>>,
+}
+
+pub fn define_import_path(input: &mut Input<'_>) -> PResult<DefineImportPath> {
+    seq! {DefineImportPath{
+        _: "#define_import_path",
+        _: spaces_single_line.resume_after(empty),
+        path: take_while(1.., |c: char| !c.is_whitespace()).span().resume_after(empty),
+        _: spaces_until_new_line
+    }}
+    .parse_next(input)
+}
+
+/// Formal grammar
+/// ```ebnf
+/// <import> ::= "#import" <s> "::"? <import_tree> ";"?
+///
+/// <import_tree> ::= <path> (<s> "as" <s> <identifier> | "::" "{" <import_trees> "}")?
+/// <import_trees> ::= <import_tree> ("," <import_tree>)* ","?
+///
+/// <path> ::= (<identifier> | <nonempty_string>) ("::" (<identifier> | <nonempty_string>) )*
+/// <identifier> ::= ([a-z]) ([a-z] | [0-9])*
+/// <nonempty_string> ::= "\"" <string_char>+ "\""
+/// <string_char> ::= [a-z]
+///
+/// <s> ::= " "+
+/// ```
+///
+/// Can be tested on https://bnfplayground.pauliankline.com/
+///
+/// Except that
+/// - `<s>` should be Unicode aware
+/// - `<identifier>` should use the XID rules instead of only allowing lowercase letters
+/// - `<nonempty_string>` should be a string with at least one character, and follow the usual "quotes and \\ backslash for escaping" rules
+/// - spaces are allowed between every token
+/// ```
+#[derive(Debug, Clone)]
+pub struct ImportDirective {
+    pub root_specifier: Option<Range<usize>>,
+    pub tree: Option<(ImportTree, Range<usize>)>,
+}
+
+pub fn import_directive(input: &mut Input<'_>) -> PResult<ImportDirective> {
+    seq! {ImportDirective {
+        _ : "#import",
+        _: spaces.resume_after(empty),
+        root_specifier: opt("::".span()),
+        tree: import_tree.with_span().resume_after(empty),
+        _: opt(spaces),
+        _: opt(";"),
+    }}
+    .parse_next(input)
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportTree {
+    Path(Vec<Range<usize>>),
+    Alias {
+        path: Vec<Range<usize>>,
+        alias: Option<Range<usize>>,
+    },
+    Children {
+        path: Vec<Range<usize>>,
+        children: Vec<ImportTree>,
+    },
+}
+
+fn import_tree(input: &mut Input<'_>) -> PResult<ImportTree> {
+    let path = path.parse_next(input)?;
+    let s = opt(spaces).parse_next(input)?;
+
+    if s.is_some() {
+        let as_token = opt("as").parse_next(input)?;
+        if as_token.is_some() {
+            let _ = spaces.resume_after(empty).parse_next(input)?;
+            let alias = identifier.resume_after(empty).parse_next(input)?;
+            return Ok(ImportTree::Alias { path, alias });
+        }
     }
 
-    // extract module name and all possible imports
-    pub fn get_preprocessor_metadata(
-        &self,
-        shader_str: &str,
-        allow_defines: bool,
-    ) -> Result<PreprocessorMetaData, ComposerErrorInner> {
-        let mut declared_imports = IndexMap::default();
-        let mut used_imports = IndexMap::default();
-        let mut name = None;
-        let mut offset = 0;
-        let mut defines = HashMap::default();
-        let mut effective_defs = HashSet::default();
+    if let Some(_) = opt("::{").parse_next(input)? {
+        let _ = opt(spaces).parse_next(input)?;
+        let children = import_trees
+            .retry_after(
+                // TODO: This recovery can explode and eat the whole file
+                (take_till(0.., (',', '}')), ",").map(|_| ()),
+            )
+            // TODO: This recovery can explode and eat the whole file
+            .resume_after((take_till(0.., '}'), '}').map(|_| ()))
+            .parse_next(input)?
+            .unwrap_or_default();
 
-        let mut lines = replace_comments(shader_str).peekable();
+        let _ = opt(spaces).parse_next(input)?;
+        let _ = "}".resume_after(empty).parse_next(input)?;
+        return Ok(ImportTree::Children { path, children });
+    }
 
-        while let Some((mut line, _)) = lines.next() {
-            let (is_scope, def) = self.check_scope(&HashMap::default(), &line, None, offset)?;
+    Ok(ImportTree::Path(path))
+}
 
-            if is_scope {
-                if let Some(def) = def {
-                    effective_defs.insert(def.to_owned());
-                }
-            } else if preprocess1::import_start.parse(input_new(&line)).is_ok() {
-                let mut import_lines = String::default();
-                let mut open_count = 0;
-                let initial_offset = offset;
+fn import_trees(input: &mut Input<'_>) -> PResult<Vec<ImportTree>> {
+    terminated(
+        separated(1.., import_tree, (opt(spaces), ",", opt(spaces))),
+        (opt(spaces), ","),
+    )
+    .parse_next(input)
+}
 
-                loop {
-                    // PERF: Ideally we don't do multiple `match_indices` passes over `line`
-                    // in addition to the final pass for the import parse
-                    open_count += line.match_indices('{').count();
-                    open_count = open_count.saturating_sub(line.match_indices('}').count());
+fn path(input: &mut Input<'_>) -> PResult<Vec<Range<usize>>> {
+    separated(
+        1..,
+        alt((nonempty_string, identifier)),
+        (opt(spaces), "::", opt(spaces)),
+    )
+    .parse_next(input)
+}
 
-                    // PERF: it's bad that we allocate here. ideally we would use something like
-                    //     let import_lines = &shader_str[initial_offset..offset]
-                    // but we need the comments removed, and the iterator approach doesn't make that easy
-                    import_lines.push_str(&line);
-                    import_lines.push('\n');
+fn identifier(input: &mut Input<'_>) -> PResult<Range<usize>> {
+    (
+        one_of(|c: char| unicode_ident::is_xid_start(c)),
+        take_while(0.., |c: char| unicode_ident::is_xid_continue(c)),
+    )
+        .span()
+        .parse_next(input)
+}
 
-                    if open_count == 0 || lines.peek().is_none() {
-                        break;
-                    }
+fn nonempty_string(input: &mut Input<'_>) -> PResult<Range<usize>> {
+    quoted_string.verify(|s| s.len() > 2).parse_next(input)
+}
 
-                    // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
-                    offset += line.len() + 1;
+fn quoted_string(input: &mut Input<'_>) -> PResult<Range<usize>> {
+    // See https://docs.rs/winnow/latest/winnow/_topic/json/index.html
+    preceded(
+        '\"',
+        terminated(
+            repeat(0.., string_character).fold(|| (), |a, _| a),
+            '\"'.resume_after(empty),
+        ),
+    )
+    .span()
+    .parse_next(input)
+}
+fn string_character(input: &mut Input<'_>) -> PResult<()> {
+    let c = none_of('\"').parse_next(input)?;
+    if c == '\\' {
+        let _ = any.parse_next(input)?;
+    }
+    Ok(())
+}
 
-                    line = lines.next().unwrap().0;
-                }
+pub struct Spaces {
+    /// Comments that are in this "spaces" block
+    pub comments: Vec<Range<usize>>,
+}
 
-                parse_imports(import_lines.as_str(), &mut declared_imports).map_err(
-                    |(err, line_offset)| {
-                        ComposerErrorInner::ImportParseError(
-                            err.to_owned(),
-                            initial_offset + line_offset,
-                        )
-                    },
-                )?;
-            } else if let Some(cap) = {
-                let a = preprocess1::define_import_path.parse(input_new(&line)).ok();
-                a
-            } {
-                name = Some(line[cap.path.unwrap()].to_string());
-            } else if let Some(cap) = {
-                let a = preprocess1::define_shader_def.parse(input_new(&line)).ok();
-                a
-            } {
-                if allow_defines {
-                    let name = line[cap.name.unwrap()].to_string();
-
-                    let value = if let Some(val) = cap.value.map(|v| &line[v]) {
-                        if let Ok(val) = val.parse::<u32>() {
-                            ShaderDefValue::UInt(val)
-                        } else if let Ok(val) = val.parse::<i32>() {
-                            ShaderDefValue::Int(val)
-                        } else if let Ok(val) = val.parse::<bool>() {
-                            ShaderDefValue::Bool(val)
-                        } else {
-                            ShaderDefValue::Bool(false) // this error will get picked up when we fully preprocess the module
-                        }
-                    } else {
-                        ShaderDefValue::Bool(true)
-                    };
-
-                    defines.insert(name, value);
-                } else {
-                    return Err(ComposerErrorInner::DefineInModule(offset));
-                }
-            } else {
-                for cap in self
-                    .def_regex
-                    .captures_iter(&line)
-                    .chain(self.def_regex_delimited.captures_iter(&line))
-                {
-                    effective_defs.insert(cap.get(1).unwrap().as_str().to_owned());
-                }
-
-                substitute_identifiers(&line, offset, &declared_imports, &mut used_imports, true)
-                    .unwrap();
+/// Parses at least one whitespace or comment.
+fn spaces(input: &mut Input<'_>) -> PResult<Spaces> {
+    repeat(
+        1..,
+        alt((
+            take_while(1.., |c: char| c.is_whitespace()).map(|_| None),
+            single_line_comment.span().map(|c| Some(c)),
+            multi_line_comment.span().map(|c| Some(c)),
+        )),
+    )
+    .fold(
+        || Vec::new(),
+        |mut comments, comment| {
+            if let Some(comment) = comment {
+                comments.push(comment);
             }
+            comments
+        },
+    )
+    .map(|comments| Spaces { comments })
+    .parse_next(input)
+}
 
-            offset += line.len() + 1;
+/// Parses at least one non-newline whitespace or comment.
+/// Preprocessor directives are always on their own line. So they need a slightly different spaces parser.
+fn spaces_single_line(input: &mut Input<'_>) -> PResult<Spaces> {
+    repeat(
+        1..,
+        alt((
+            take_while(1.., |c: char| c.is_whitespace() && !is_newline_start(c)).map(|_| None),
+            single_line_comment.span().map(|c| Some(c)),
+            multi_line_comment.span().map(|c| Some(c)),
+        )),
+    )
+    .fold(
+        || Vec::new(),
+        |mut comments, comment| {
+            if let Some(comment) = comment {
+                comments.push(comment);
+            }
+            comments
+        },
+    )
+    .map(|comments| Spaces { comments })
+    .parse_next(input)
+}
+
+/// Checks if it's part of a Unicode line break, according to https://www.w3.org/TR/WGSL/#line-break
+fn is_newline_start(c: char) -> bool {
+    c == '\u{000A}'
+        || c == '\u{000B}'
+        || c == '\u{000C}'
+        || c == '\u{000D}'
+        || c == '\u{0085}'
+        || c == '\u{2028}'
+        || c == '\u{2029}'
+}
+
+fn spaces_until_new_line(input: &mut Input<'_>) -> PResult<Spaces> {
+    let spaces = opt(spaces_single_line).parse_next(input)?;
+    let _newline = new_line
+        .retry_after(take_till(0.., is_newline_start).map(|_| ()))
+        .parse_next(input)?;
+    Ok(spaces.unwrap_or(Spaces {
+        comments: Vec::new(),
+    }))
+}
+
+fn new_line(input: &mut Input<'_>) -> PResult<()> {
+    alt((
+        "\u{000D}\u{000A}".map(|_| ()),
+        one_of(is_newline_start).map(|_| ()),
+        eof.map(|_| ()),
+    ))
+    .parse_next(input)
+}
+
+fn single_line_comment(input: &mut Input<'_>) -> PResult<()> {
+    let _start = "//".parse_next(input)?;
+    let _text = take_till(0.., is_newline_start).parse_next(input)?;
+    let _newline = new_line.parse_next(input)?;
+    Ok(())
+}
+
+fn multi_line_comment(input: &mut Input<'_>) -> PResult<()> {
+    let _start = "/*".parse_next(input)?;
+    loop {
+        if let Some(_end) = opt("*/").parse_next(input)? {
+            return Ok(());
+        } else if let Some(_) = opt(multi_line_comment).parse_next(input)? {
+            // We found a nested comment, skip it
+        } else {
+            // Skip any other character
+            // TODO: Eof error recovery
+            let _ = take_till(1.., ('*', '/')).parse_next(input)?;
         }
-
-        Ok(PreprocessorMetaData {
-            name,
-            imports: used_imports.into_values().collect(),
-            defines,
-            effective_defs,
-        })
     }
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
 
-    #[rustfmt::skip]
-    const WGSL_ELSE_IFDEF: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-
-#ifdef TEXTURE
-// Main texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#else ifdef SECOND_TEXTURE
-// Second texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#else ifdef THIRD_TEXTURE
-// Third texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#else
-@group(1) @binding(0)
-var sprite_texture: texture_2d_array<f32>;
-#endif
-
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-    //preprocessor tests
-    #[test]
-    fn process_shader_def_unknown_operator() {
-        #[rustfmt::skip]
-        const WGSL: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-#if TEXTURE !! true
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#endif
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        let processor = Preprocessor::default();
-
-        let result_missing = processor.preprocess(
-            WGSL,
-            &[("TEXTURE".to_owned(), ShaderDefValue::Bool(true))].into(),
-            true,
-        );
-
-        let expected: Result<Preprocessor, ComposerErrorInner> =
-            Err(ComposerErrorInner::UnknownShaderDefOperator {
-                pos: 124,
-                operator: "!!".to_string(),
-            });
-
-        assert_eq!(format!("{result_missing:?}"), format!("{expected:?}"),);
+    fn replace_comments(input: &str) -> String {
+        let mut input = input_new(input);
+        let mut output = String::new();
+        loop {
+            if let Some(span) = opt(single_line_comment.span())
+                .parse_next(&mut input)
+                .unwrap()
+            {
+                output.push_str(&" ".repeat(span.len()));
+            } else if let Some(span) = opt(multi_line_comment.span())
+                .parse_next(&mut input)
+                .unwrap()
+            {
+                output.push_str(&" ".repeat(span.len()));
+            } else if let Some(v) = opt(any::<_, ContextError>).parse_next(&mut input).unwrap() {
+                output.push(v);
+            } else {
+                let _ = eof::<_, ContextError>.parse_next(&mut input).unwrap();
+                break;
+            }
+        }
+        output
     }
+
     #[test]
-    fn process_shader_def_equal_int() {
-        #[rustfmt::skip]
-        const WGSL: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-#if TEXTURE == 3
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#endif
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        #[rustfmt::skip]
-        const EXPECTED_EQ: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-                
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-      
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        #[rustfmt::skip]
-        const EXPECTED_NEQ: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-                
-                     
-                                    
-      
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result_eq = processor
-            .preprocess(
-                WGSL,
-                &[("TEXTURE".to_string(), ShaderDefValue::Int(3))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(result_eq.preprocessed_source, EXPECTED_EQ);
-
-        let result_neq = processor
-            .preprocess(
-                WGSL,
-                &[("TEXTURE".to_string(), ShaderDefValue::Int(7))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(result_neq.preprocessed_source, EXPECTED_NEQ);
-
-        let result_missing = processor.preprocess(WGSL, &Default::default(), true);
-
-        let expected_err: Result<
-            (Option<String>, String, Vec<ImportDefWithOffset>),
-            ComposerErrorInner,
-        > = Err(ComposerErrorInner::UnknownShaderDef {
-            pos: 124,
-            shader_def_name: "TEXTURE".to_string(),
-        });
-        assert_eq!(format!("{result_missing:?}"), format!("{expected_err:?}"),);
-
-        let result_wrong_type = processor.preprocess(
-            WGSL,
-            &[("TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
-            true,
-        );
-
-        let expected_err: Result<
-            (Option<String>, String, Vec<ImportDefWithOffset>),
-            ComposerErrorInner,
-        > = Err(ComposerErrorInner::InvalidShaderDefComparisonValue {
-            pos: 124,
-            shader_def_name: "TEXTURE".to_string(),
-            expected: "bool".to_string(),
-            value: "3".to_string(),
-        });
-
+    fn test_path_simple() {
+        let input = "a::b::c";
         assert_eq!(
-            format!("{result_wrong_type:?}"),
-            format!("{expected_err:?}")
+            path.parse(input_new(input)).ok(),
+            Some(vec![0..1, 3..4, 6..7])
         );
     }
-
     #[test]
-    fn process_shader_def_equal_bool() {
-        #[rustfmt::skip]
-        const WGSL: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-#if TEXTURE == true
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#endif
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        #[rustfmt::skip]
-        const EXPECTED_EQ: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-                   
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-      
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        #[rustfmt::skip]
-        const EXPECTED_NEQ: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-                   
-                     
-                                    
-      
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result_eq = processor
-            .preprocess(
-                WGSL,
-                &[("TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(result_eq.preprocessed_source, EXPECTED_EQ);
-
-        let result_neq = processor
-            .preprocess(
-                WGSL,
-                &[("TEXTURE".to_string(), ShaderDefValue::Bool(false))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(result_neq.preprocessed_source, EXPECTED_NEQ);
-    }
-
-    #[test]
-    fn process_shader_def_not_equal_bool() {
-        #[rustfmt::skip]
-        const WGSL: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-#if TEXTURE != false
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#endif
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        #[rustfmt::skip]
-        const EXPECTED_EQ: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-                    
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-      
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        #[rustfmt::skip]
-        const EXPECTED_NEQ: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-                    
-                     
-                                    
-      
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result_eq = processor
-            .preprocess(
-                WGSL,
-                &[("TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(result_eq.preprocessed_source, EXPECTED_EQ);
-
-        let result_neq = processor
-            .preprocess(
-                WGSL,
-                &[("TEXTURE".to_string(), ShaderDefValue::Bool(false))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(result_neq.preprocessed_source, EXPECTED_NEQ);
-
-        let result_missing = processor.preprocess(WGSL, &[].into(), true);
-        let expected_err: Result<
-            (Option<String>, String, Vec<ImportDefWithOffset>),
-            ComposerErrorInner,
-        > = Err(ComposerErrorInner::UnknownShaderDef {
-            pos: 124,
-            shader_def_name: "TEXTURE".to_string(),
-        });
-        assert_eq!(format!("{result_missing:?}"), format!("{expected_err:?}"),);
-
-        let result_wrong_type = processor.preprocess(
-            WGSL,
-            &[("TEXTURE".to_string(), ShaderDefValue::Int(7))].into(),
-            true,
-        );
-
-        let expected_err: Result<
-            (Option<String>, String, Vec<ImportDefWithOffset>),
-            ComposerErrorInner,
-        > = Err(ComposerErrorInner::InvalidShaderDefComparisonValue {
-            pos: 124,
-            shader_def_name: "TEXTURE".to_string(),
-            expected: "int".to_string(),
-            value: "false".to_string(),
-        });
+    fn test_path_trailing() {
+        // It shouldn't eat the trailing character
+        let input = "a::b::c::";
+        assert_eq!(path.parse(input_new(input)).ok(), None);
+        let mut inp = input_new(input);
         assert_eq!(
-            format!("{result_wrong_type:?}"),
-            format!("{expected_err:?}"),
+            path.with_span().parse_next(&mut inp).ok(),
+            Some((vec![0..1, 3..4, 6..7], 0..7,))
         );
+        // assert_eq!("::".parse_next(&mut inp).ok(), Some("::"));
     }
 
     #[test]
-    fn process_shader_def_replace() {
-        #[rustfmt::skip]
-        const WGSL: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    var a: i32 = #FIRST_VALUE;
-    var b: i32 = #FIRST_VALUE * #SECOND_VALUE;
-    var c: i32 = #MISSING_VALUE;
-    var d: bool = #BOOL_VALUE;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
+    fn comment_test() {
+        let input = r"
+not commented
+// line commented
+not commented
+/* block commented on a line */
+not commented
+// line comment with a /* block comment unterminated
+not commented
+/* block comment
+   spanning lines */
+not commented
+/* block comment
+   spanning lines and with // line comments
+   even with a // line commented terminator */
+not commented
 ";
 
-        #[rustfmt::skip]
-        const EXPECTED_REPLACED: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    var a: i32 = 5;           
-    var b: i32 = 5 * 3;                       
-    var c: i32 = #MISSING_VALUE;
-    var d: bool = true;       
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(
-                WGSL,
-                &[
-                    ("BOOL_VALUE".to_string(), ShaderDefValue::Bool(true)),
-                    ("FIRST_VALUE".to_string(), ShaderDefValue::Int(5)),
-                    ("SECOND_VALUE".to_string(), ShaderDefValue::Int(3)),
-                ]
-                .into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(result.preprocessed_source, EXPECTED_REPLACED);
-    }
-
-    #[test]
-    fn process_shader_define_in_shader() {
-        #[rustfmt::skip]
-        const WGSL: &str = r"
-#define NOW_DEFINED
-#ifdef NOW_DEFINED
-defined
-#endif
-";
-
-        #[rustfmt::skip]
-        const EXPECTED: &str = r"
-                   
-                  
-defined
-      
-";
-        let processor = Preprocessor::default();
-        let PreprocessorMetaData {
-            defines: shader_defs,
-            ..
-        } = processor.get_preprocessor_metadata(&WGSL, true).unwrap();
-        println!("defines: {:?}", shader_defs);
-        let result = processor.preprocess(&WGSL, &shader_defs, true).unwrap();
-        assert_eq!(result.preprocessed_source, EXPECTED);
-    }
-
-    #[test]
-    fn process_shader_define_in_shader_with_value() {
-        #[rustfmt::skip]
-        const WGSL: &str = r"
-#define DEFUINT 1
-#define DEFINT -1
-#define DEFBOOL false
-#if DEFUINT == 1
-uint: #DEFUINT
-#endif
-#if DEFINT == -1
-int: #DEFINT
-#endif
-#if DEFBOOL == false
-bool: #DEFBOOL
-#endif
-";
-
-        #[rustfmt::skip]
-        const EXPECTED: &str = r"
-                 
-                 
-                     
-                
-uint: 1       
-      
-                
-int: -1     
-      
-                    
-bool: false   
-      
-";
-        let processor = Preprocessor::default();
-        let PreprocessorMetaData {
-            defines: shader_defs,
-            ..
-        } = processor.get_preprocessor_metadata(&WGSL, true).unwrap();
-        println!("defines: {:?}", shader_defs);
-        let result = processor.preprocess(&WGSL, &shader_defs, true).unwrap();
-        assert_eq!(result.preprocessed_source, EXPECTED);
-    }
-
-    #[test]
-    fn process_shader_def_else_ifdef_ends_up_in_else() {
-        #[rustfmt::skip]
-        const EXPECTED: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-@group(1) @binding(0)
-var sprite_texture: texture_2d_array<f32>;
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(&WGSL_ELSE_IFDEF, &[].into(), true)
-            .unwrap();
+        let replaced = replace_comments(input);
+        assert_eq!(replaced.len(), input.len());
         assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
+            replaced
+                .lines()
+                .zip(input.lines())
+                .find(|(line, original)| {
+                    (*line != "not commented" && !line.chars().all(|c| c == ' '))
+                        || line.len() != original.len()
+                }),
+            None
         );
-    }
 
-    #[test]
-    fn process_shader_def_else_ifdef_no_match_and_no_fallback_else() {
-        #[rustfmt::skip]
-        const WGSL_ELSE_IFDEF_NO_ELSE_FALLBACK: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
+        let partial_tests = [
+            (
+                "1.0 /* block comment with a partial line comment on the end *// 2.0",
+                "1.0                                                           / 2.0",
+            ),
+            (
+                "1.0 /* block comment with a partial block comment on the end */* 2.0",
+                "1.0                                                            * 2.0",
+            ),
+            (
+                "1.0 /* block comment 1 *//* block comment 2 */ * 2.0",
+                "1.0                                            * 2.0",
+            ),
+            (
+                "1.0 /* block comment with real line comment after */// line comment",
+                "1.0                                                                ",
+            ),
+        ];
 
-#ifdef TEXTURE
-// Main texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#else ifdef OTHER_TEXTURE
-// Other texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-#endif
-
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-
-        #[rustfmt::skip]
-    const EXPECTED: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(&WGSL_ELSE_IFDEF_NO_ELSE_FALLBACK, &[].into(), true)
-            .unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
-    }
-
-    #[test]
-    fn process_shader_def_else_ifdef_ends_up_in_first_clause() {
-        #[rustfmt::skip]
-    const EXPECTED: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-              
-// Main texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-                          
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(
-                &WGSL_ELSE_IFDEF,
-                &[("TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
-    }
-
-    #[test]
-    fn process_shader_def_else_ifdef_ends_up_in_second_clause() {
-        #[rustfmt::skip]
-    const EXPECTED: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-// Second texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(
-                &WGSL_ELSE_IFDEF,
-                &[("SECOND_TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
-    }
-
-    #[test]
-    fn process_shader_def_else_ifdef_ends_up_in_third_clause() {
-        #[rustfmt::skip]
-    const EXPECTED: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-// Third texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(
-                &WGSL_ELSE_IFDEF,
-                &[("THIRD_TEXTURE".to_string(), ShaderDefValue::Bool(true))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
-    }
-
-    #[test]
-    fn process_shader_def_else_ifdef_only_accepts_one_valid_else_ifdef() {
-        #[rustfmt::skip]
-    const EXPECTED: &str = r"
-struct View {
-    view_proj: mat4x4<f32>,
-    world_position: vec3<f32>,
-};
-@group(0) @binding(0)
-var<uniform> view: View;
-// Second texture
-@group(1) @binding(0)
-var sprite_texture: texture_2d<f32>;
-struct VertexOutput {
-    @location(0) uv: vec2<f32>,
-    @builtin(position) position: vec4<f32>,
-};
-@vertex
-fn vertex(
-    @location(0) vertex_position: vec3<f32>,
-    @location(1) vertex_uv: vec2<f32>
-) -> VertexOutput {
-    var out: VertexOutput;
-    out.uv = vertex_uv;
-    out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
-    return out;
-}
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(
-                &WGSL_ELSE_IFDEF,
-                &[
-                    ("SECOND_TEXTURE".to_string(), ShaderDefValue::Bool(true)),
-                    ("THIRD_TEXTURE".to_string(), ShaderDefValue::Bool(true)),
-                ]
-                .into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
-    }
-
-    #[test]
-    fn process_shader_def_else_ifdef_complicated_nesting() {
-        // Test some nesting including #else ifdef statements
-        // 1. Enter an #else ifdef
-        // 2. Then enter an #else
-        // 3. Then enter another #else ifdef
-
-        #[rustfmt::skip]
-        const WGSL_COMPLICATED_ELSE_IFDEF: &str = r"
-#ifdef NOT_DEFINED
-// not defined
-#else ifdef IS_DEFINED
-// defined 1
-#ifdef NOT_DEFINED
-// not defined
-#else
-// should be here
-#ifdef NOT_DEFINED
-// not defined
-#else ifdef ALSO_NOT_DEFINED
-// not defined
-#else ifdef IS_DEFINED
-// defined 2
-#endif
-#endif
-#endif
-";
-
-        #[rustfmt::skip]
-        const EXPECTED: &str = r"
-// defined 1
-// should be here
-// defined 2
-";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(
-                &WGSL_COMPLICATED_ELSE_IFDEF,
-                &[("IS_DEFINED".to_string(), ShaderDefValue::Bool(true))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
-    }
-
-    #[test]
-    fn process_shader_def_else_ifndef() {
-        #[rustfmt::skip]
-        const INPUT: &str = r"
-#ifdef NOT_DEFINED
-fail 1
-#else ifdef ALSO_NOT_DEFINED
-fail 2
-#else ifndef ALSO_ALSO_NOT_DEFINED
-ok
-#else
-fail 3
-#endif
-";
-
-        const EXPECTED: &str = r"ok";
-        let processor = Preprocessor::default();
-        let result = processor.preprocess(&INPUT, &[].into(), true).unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
-    }
-
-    #[test]
-    fn process_shader_def_else_if() {
-        #[rustfmt::skip]
-        const INPUT: &str = r"
-#ifdef NOT_DEFINED
-fail 1
-#else if x == 1
-fail 2
-#else if x == 2
-ok
-#else
-fail 3
-#endif
-";
-
-        const EXPECTED: &str = r"ok";
-        let processor = Preprocessor::default();
-        let result = processor
-            .preprocess(
-                &INPUT,
-                &[("x".to_owned(), ShaderDefValue::Int(2))].into(),
-                true,
-            )
-            .unwrap();
-        assert_eq!(
-            result
-                .preprocessed_source
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", ""),
-            EXPECTED
-                .replace(" ", "")
-                .replace("\n", "")
-                .replace("\r", "")
-        );
+        for &(input, expected) in partial_tests.iter() {
+            assert_eq!(&replace_comments(input), expected);
+        }
     }
 }

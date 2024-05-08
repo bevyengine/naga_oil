@@ -13,7 +13,7 @@ use codespan_reporting::{
 use thiserror::Error;
 use tracing::trace;
 
-use super::{preprocess::PreprocessOutput, Composer, ShaderDefValue};
+use super::{ Composer, ShaderDefValue};
 use crate::{compose::SPAN_SHIFT, redirect::RedirectError};
 
 #[derive(Debug)]
@@ -41,7 +41,7 @@ impl ErrSource {
     pub fn source<'a>(&'a self, composer: &'a Composer) -> Cow<'a, String> {
         match self {
             ErrSource::Module { name, defs, .. } => {
-                let raw_source = &composer.module_sets.get(name).unwrap().sanitized_source;
+                let raw_source = &composer.module_sets.get(name).unwrap().source;
                 let Ok(PreprocessOutput {
                     preprocessed_source: source,
                     ..
@@ -144,6 +144,8 @@ pub enum ComposerErrorInner {
     DefineInModule(usize),
     #[error("failed to preprocess shader {0}")]
     PreprocessorError(StringsWithNewlines),
+    #[error("module already exists, cannot overwrite {0}")]
+    ModuleAlreadyExists(String),
 }
 
 #[derive(Debug)]
@@ -323,6 +325,9 @@ impl ComposerError {
             ),
             ComposerErrorInner::PreprocessorError(e) => {
                 return format!("{path}: preprocessor errors: {e}");
+            }
+            ComposerErrorInner::ModuleAlreadyExists(name) => {
+                return format!("{path}: module already exists, cannot overwrite {name}");
             }
         };
 
