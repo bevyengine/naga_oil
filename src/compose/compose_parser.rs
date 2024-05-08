@@ -11,8 +11,8 @@ use crate::compose::preprocess::ResolvedIfOp;
 
 use super::{
     composer::{
-        ComposableModuleDefinition, Composer, ComposerError, ComposerErrorInner, ErrSource,
-        ImportDefWithOffset, ImportDefinition, ShaderDefValue,
+        get_imported_module, ComposableModuleDefinition, Composer, ComposerError,
+        ComposerErrorInner, ErrSource, ImportDefWithOffset, ShaderDefValue,
     },
     preprocess::{IfDefDirective, IfOpDirective, PreprocessorPart},
 };
@@ -106,19 +106,10 @@ fn top_level_preprocessor<'a>(input: &mut Stream<'a>) -> PResult<PreprocessOutpu
                     .unwrap()
                     .into_iter()
                 {
-                    let module_name = input.state.composer.get_imported_module(&import).unwrap(); // TODO: Error handling
-                    let item = if &import.path == &module_name.0 {
-                        module_name.0.clone()
-                    } else {
-                        import.path.rsplit_once("::").unwrap().0.to_owned()
-                    };
-                    imports.push(ImportDefWithOffset {
-                        definition: ImportDefinition {
-                            module: module_name.clone(),
-                            item,
-                        },
-                        offset: import.offset,
-                    })
+                    let import =
+                        get_imported_module(&input.state.composer.module_sets, &import).unwrap(); // TODO: Error handling
+
+                    imports.push(import)
                 }
             }
             PreprocessorPart::UnknownDirective(_) => {
@@ -331,4 +322,8 @@ fn act_on(a: &str, b: &str, op: &str) -> Result<bool, ()> {
 pub struct PreprocessOutput {
     pub source: String,
     pub imports: Vec<ImportDefWithOffset>,
+    // TODO: Implement this, or justify why it's shouldn't be a thing yet
+    // When the user uses `a::b` in the source code, we mangle it to a random name before parsing.
+    // This map is used to resolve the mangled names back to the original names.
+    // pub source_alias_to_path: HashMap<String, String>,
 }

@@ -92,11 +92,6 @@ pub struct ComposableModule {
     pub owned_vars: HashSet<String>,
     // functions exported
     pub owned_functions: HashSet<String>,
-    // local functions that can be overridden
-    pub virtual_functions: HashSet<String>,
-    // overriding functions defined in this module
-    // target function -> Vec<replacement functions>
-    pub override_functions: IndexMap<String, Vec<String>>,
     // naga module, built against headers for any imports
     module_ir: naga::Module,
     // headers in different shader languages, used for building modules/shaders that import this module
@@ -131,13 +126,104 @@ pub struct ComposableModuleDefinition {
     pub(super) alias_to_path: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+impl ComposableModuleDefinition {
+    pub fn get_imports(&self, module_sets: &HashMap<ModuleName, ComposableModuleDefinition>) -> Result<Vec<ImportDefinition>, ComposerError> {
+        self
+                .additional_imports
+                .iter()
+                .map(|(_, import)| Ok(import.clone()))
+                .chain(self.shader_imports.iter().map(|import| {
+                    match get_imported_module(module_sets, import) {
+                        Some(v) => Ok(v.definition),
+                        None => Err(ComposerError {
+                            inner: ComposerErrorInner::ImportNotFound(
+                                import.path.to_owned(),
+                                import.offset,
+                            ),
+                            source: ErrSource::Module {
+                                name: self.name.0.to_string(),
+                                offset: import.offset,
+                                defs: self.shader_defs.clone(),
+                            },
+                        }),
+                    }
+                })).collect()
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct ImportGraph {
+    graph: HashMap<ModuleName, Vec<ImportDefinition>>,
+}
+
+// TODO: Document that conditional imports are not supported. (have to be at the very top, just like #defines)
+// TODO: Verify that ^
+// Alternatively, we could support them by changing the #define semantics to no longer be global & time traveling.
+impl ImportGraph {
+    pub fn new(
+        module_sets: &HashMap<ModuleName, ComposableModuleDefinition>,
+    ) -> Result<Self, ComposerError> {
+        let mut graph = HashMap::new();
+        for (module_name, module) in module_sets {
+            graph.insert(module_name.clone(), module.get_imports(module_sets)?);
+        }
+        Ok(Self { graph })
+    }
+
+    /// Collects all imports for a given entry point module.
+    /// Excludes the entry point module itself.
+    pub fn collect_imports(&self, entry_point: &ModuleName) -> HashSet<ModuleName> {
+        let mut all_imports = HashSet::new();
+
+        fn collect_imports_rec(
+            module: &ModuleName,
+            graph: &ImportGraph,
+            all_imports: &mut HashSet<ModuleName>,
+        ) {
+            if let Some(imports) = graph.graph.get(module) {
+                for import in imports {
+                    if all_imports.insert(import.module.clone()) {
+                        collect_imports_rec(&import.module, graph, all_imports);
+                    }
+                }
+            }
+        }
+        collect_imports_rec(entry_point, &self, &mut all_imports);
+
+        all_imports
+    }
+
+    /// Visits all modules in topological order, ending with the entry point.
+    pub fn depth_first_visit(&self, entry_point: &ModuleName, callback: impl Fn(&ModuleName, &[ImportDefinition])) {
+        fn visit(module: &ModuleName, graph: &ImportGraph, callback: &impl Fn(&ModuleName, &[ImportDefinition]), visited: &mut HashSet<ModuleName>) {
+            if !visited.insert(module.clone()) {return;}
+            if let Some(imports) = graph.graph.get(module) {
+                for import in imports {
+                    visit(&import.module, graph, callback, visited);
+                }
+                callback(module, imports);
+            }
+        }
+
+        let mut visited = HashSet::new();
+        visit(entry_point, self, &callback, &mut visited);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord,)]
 pub struct ModuleName(pub(super) String);
 impl ModuleName {
     pub fn new<S: Into<String>>(name: S) -> Self {
         Self(name.into())
     }
 }
+impl std::fmt::Display for ModuleName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportDefinition {
     pub module: ModuleName,
@@ -216,7 +302,6 @@ const DECORATION_OVERRIDE_PRE: &str = "X_naga_oil_vrt_X";
 struct IrBuildResult {
     module: naga::Module,
     start_offset: usize,
-    override_functions: IndexMap<String, Vec<String>>,
 }
 
 impl Composer {
@@ -362,12 +447,11 @@ impl Composer {
     fn create_module_ir(
         &self,
         name: &str,
-        source: String,
+        module: &PreprocessOutput,
         language: ShaderLanguage,
-        imports: &[ImportDefinition],
-        shader_defs: &HashMap<String, ShaderDefValue>,
+        
     ) -> Result<IrBuildResult, ComposerError> {
-        debug!("creating IR for {} with defs: {:?}", name, shader_defs);
+        debug!("creating IR for {}", name);
 
         let mut module_string = match language {
             ShaderLanguage::Wgsl => String::new(),
@@ -375,49 +459,16 @@ impl Composer {
             ShaderLanguage::Glsl => String::from("#version 450\n"),
         };
 
-        let mut override_functions: IndexMap<String, Vec<String>> = IndexMap::default();
-        let mut added_imports: HashSet<String> = HashSet::new();
+        let mut added_imports = HashSet::new();
         let mut header_module = DerivedModule::default();
 
-        for import in imports {
-            if added_imports.contains(&import.module) {
-                continue;
-            }
-            // add to header module
+        for import in module.imports.iter() {
             self.add_import(
                 &mut header_module,
-                import,
-                shader_defs,
+                &import.definition,
                 true,
                 &mut added_imports,
             );
-
-            // // we must have ensured these exist with Composer::ensure_imports()
-            trace!("looking for {}", import.module);
-            let import_module_set = self.module_sets.get(&import.module).unwrap();
-            trace!("with defs {:?}", shader_defs);
-            let module = import_module_set.get_module(shader_defs).unwrap();
-            trace!("ok");
-
-            // gather overrides
-            if !module.override_functions.is_empty() {
-                for (original, replacements) in &module.override_functions {
-                    match override_functions.entry(original.clone()) {
-                        indexmap::map::Entry::Occupied(o) => {
-                            let existing = o.into_mut();
-                            let new_replacements: Vec<_> = replacements
-                                .iter()
-                                .filter(|rep| !existing.contains(rep))
-                                .cloned()
-                                .collect();
-                            existing.extend(new_replacements);
-                        }
-                        indexmap::map::Entry::Vacant(v) => {
-                            v.insert(replacements.clone());
-                        }
-                    }
-                }
-            }
         }
 
         let composed_header = self
@@ -427,14 +478,14 @@ impl Composer {
                 source: ErrSource::Module {
                     name: name.to_owned(),
                     offset: 0,
-                    defs: shader_defs.clone(),
+                    defs: Default::default(), // TODO: better reporting
                 },
             })?;
         module_string.push_str(&composed_header);
 
         let start_offset = module_string.len();
 
-        module_string.push_str(&source);
+        module_string.push_str(&module.source);
 
         trace!(
             "parsing {}: {}, header len {}, total len {}",
@@ -451,7 +502,7 @@ impl Composer {
                     source: ErrSource::Module {
                         name: name.to_owned(),
                         offset: start_offset,
-                        defs: shader_defs.clone(),
+                        defs: Default::default(), // TODO: better reporting
                     },
                 }
             })?,
@@ -471,7 +522,7 @@ impl Composer {
                         source: ErrSource::Module {
                             name: name.to_owned(),
                             offset: start_offset,
-                            defs: shader_defs.clone(),
+                            defs: Default::default(), // TODO: better reporting
                         },
                     }
                 })?,
@@ -480,7 +531,6 @@ impl Composer {
         Ok(IrBuildResult {
             module,
             start_offset,
-            override_functions,
         })
     }
 
@@ -649,8 +699,7 @@ impl Composer {
 
         let IrBuildResult {
             module: mut source_ir,
-            start_offset,
-            mut override_functions,
+            start_offset,,
         } = self.create_module_ir(
             &module_definition.name.0,
             source,
@@ -853,8 +902,6 @@ impl Composer {
             owned_constants: owned_constants.into_keys().collect(),
             owned_vars: owned_vars.into_keys().collect(),
             owned_functions: owned_functions.into_keys().collect(),
-            virtual_functions,
-            override_functions,
             module_ir,
             header_ir,
             start_offset,
@@ -919,11 +966,8 @@ impl Composer {
         for (h_f, f) in source_ir.functions.iter() {
             if let Some(name) = &f.name {
                 if composable.owned_functions.contains(name)
-                    && (items.map_or(true, |items| items.contains(name))
-                        || composable
-                            .override_functions
-                            .values()
-                            .any(|v| v.contains(name)))
+                    && items.map_or(true, |items| items.contains(name))
+                        
                 {
                     let span = composable.module_ir.functions.get_span(h_f);
                     derived.import_function_if_new(f, span);
@@ -939,12 +983,10 @@ impl Composer {
         &'a self,
         derived: &mut DerivedModule<'a>,
         import: &ImportDefinition,
-        shader_defs: &HashMap<String, ShaderDefValue>,
         header: bool,
-        already_added: &mut HashSet<String>,
+        already_added: &mut HashSet<ModuleName>,
     ) {
         if already_added.contains(&import.module) {
-            trace!("skipping {}, already added", import.module);
             return;
         }
 
@@ -952,7 +994,7 @@ impl Composer {
         let module = import_module_set.get_module(shader_defs).unwrap();
 
         for import in &module.imports {
-            self.add_import(derived, import, shader_defs, header, already_added);
+            self.add_import(derived, import, header, already_added);
         }
 
         Self::add_composable_data(
@@ -962,105 +1004,6 @@ impl Composer {
             import_module_set.module_index << SPAN_SHIFT,
             header,
         );
-    }
-
-    fn ensure_import(
-        &mut self,
-        module_set: &ComposableModuleDefinition,
-        shader_defs: &HashMap<String, ShaderDefValue>,
-    ) -> Result<ComposableModule, ComposerError> {
-        let PreprocessOutput {
-            preprocessed_source,
-            imports,
-        } = self
-            .preprocessor
-            .preprocess(&module_set.source, shader_defs, self.validate)
-            .map_err(|inner| ComposerError {
-                inner,
-                source: ErrSource::Module {
-                    name: module_set.name.to_owned(),
-                    offset: 0,
-                    defs: shader_defs.clone(),
-                },
-            })?;
-
-        self.ensure_imports(imports.iter().map(|import| &import.definition), shader_defs)?;
-        self.ensure_imports(&module_set.additional_imports, shader_defs)?;
-
-        self.create_composable_module(
-            module_set,
-            Self::decorate(&module_set.name),
-            shader_defs,
-            true,
-            true,
-            &preprocessed_source,
-            imports,
-        )
-    }
-
-    pub(super) fn get_imported_module(&self, import: &FlattenedImport) -> Option<ModuleName> {
-        let module_exists = self
-            .module_sets
-            .contains_key(&ModuleName(import.path.clone()));
-        let splitted_module_path = import.path.rsplit_once("::");
-        // TODO: Change the syntax, or add #export s so that I don't need to rely on this hack where I check "which import could be correct".
-        let module = match (module_exists, splitted_module_path) {
-            (true, None) => ModuleName::new(import.path.clone()),
-            (true, Some((module, _item))) => {
-                eprintln!("Ambiguous import: {} could refer to either a module or a function. Please use the syntax `module::function` to disambiguate.", import.path);
-                ModuleName::new(module)
-            }
-            (false, None) => {
-                return None;
-            }
-            (false, Some((module, _item))) => ModuleName::new(module),
-        };
-
-        Some(module)
-    }
-
-    pub(super) fn collect_all_imports(
-        &self,
-        entry_point: &ModuleName,
-        imports: &mut HashSet<ModuleName>,
-    ) -> Result<(), ComposerError> {
-        let entry_module = self.module_sets.get(entry_point).unwrap();
-
-        // TODO: Document that conditional imports are not supported. (have to be at the very top, just like #defines)
-        // TODO: Verify that ^
-        // Alternatively, we could support them by changing the #define semantics to no longer be global & time traveling.
-
-        for import in entry_module.shader_imports.iter() {
-            let module = match self.get_imported_module(import) {
-                Some(v) => v,
-                None => {
-                    return Err(ComposerError {
-                        inner: ComposerErrorInner::ImportNotFound(
-                            import.path.to_owned(),
-                            import.offset,
-                        ),
-                        source: ErrSource::Module {
-                            name: entry_point.0.to_string(),
-                            offset: 0,
-                            defs: Default::default(), // TODO: Set this properly
-                        },
-                    });
-                }
-            };
-
-            let is_new_import = imports.insert(module.clone());
-            if is_new_import {
-                self.collect_all_imports(&module, imports)?;
-            }
-        }
-
-        for (additional_module, _) in entry_module.additional_imports.iter() {
-            let is_new_import = imports.insert(additional_module.clone());
-            if is_new_import {
-                self.collect_all_imports(&additional_module, imports)?;
-            }
-        }
-        Ok(())
     }
 
     pub(super) fn collect_shader_defs(
@@ -1093,7 +1036,7 @@ impl Composer {
         Ok(())
     }
 
-    pub(super) fn make_composable_module(
+    pub(super) fn make_composable_module_definition(
         &self,
         desc: ComposableModuleDescriptor,
     ) -> Result<ComposableModuleDefinition, ComposerError> {
@@ -1233,4 +1176,47 @@ impl Composer {
 
         Ok(module_set)
     }
+}
+
+pub(super) fn get_imported_module(
+    module_sets: &HashMap<ModuleName, ComposableModuleDefinition>,
+    import: &FlattenedImport,
+) -> Option<ImportDefWithOffset> {
+    let module_path = ModuleName::new(&import.path);
+    let splitted_path = import.path.rsplit_once("::");
+    let super_module_path: Option<(ModuleName, String)> = splitted_path
+        .map(|(module, item)| (ModuleName::new(module), item))
+        .and_then(|(module, item)| {
+            if module_sets.contains_key(&module) {
+                Some((module, item.to_owned()))
+            } else {
+                None
+            }
+        });
+
+    let module_exists = module_sets.contains_key(&module_path);
+
+    // TODO: Change the syntax, or add #export s so that I don't need to rely on this hack where I check "which import could be correct".
+    let (module, item) = match (module_exists, super_module_path) {
+        (true, None) => (
+            ModuleName::new(import.path.clone()),
+            splitted_path
+                .map(|v| v.1)
+                .unwrap_or_else(|| &import.path)
+                .to_owned(),
+        ),
+        (true, Some((module, item))) => {
+            eprintln!("Ambiguous import: {} could refer to either a module or a function. Please use the syntax `module::function` to disambiguate.", import.path);
+            (module, item)
+        }
+        (false, None) => {
+            return None;
+        }
+        (false, Some((module, item))) => (module, item),
+    };
+
+    Some(ImportDefWithOffset {
+        definition: ImportDefinition { module, item },
+        offset: import.offset,
+    })
 }

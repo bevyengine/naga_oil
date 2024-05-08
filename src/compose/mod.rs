@@ -5,8 +5,8 @@ use naga::EntryPoint;
 use crate::{derive::DerivedModule, redirect::Redirector};
 
 use self::composer::{
-    ComposableModuleDefinition, Composer, ComposerError, ComposerErrorInner, ErrSource, ModuleName,
-    ShaderDefValue,
+    ComposableModuleDefinition, Composer, ComposerError, ComposerErrorInner, ErrSource,
+    ImportGraph, ModuleName, ShaderDefValue,
 };
 
 mod compose_parser;
@@ -231,7 +231,7 @@ impl Composer {
         &mut self,
         desc: ComposableModuleDescriptor,
     ) -> Result<&ComposableModuleDefinition, ComposerError> {
-        let module_set = self.make_composable_module(desc)?;
+        let module_set = self.make_composable_module_definition(desc)?;
 
         if self.module_sets.contains_key(&module_set.name) {
             return Err(ComposerError {
@@ -262,7 +262,7 @@ impl Composer {
         &mut self,
         desc: NagaModuleDescriptor,
     ) -> Result<naga::Module, ComposerError> {
-        let definition = self.make_composable_module(ComposableModuleDescriptor {
+        let definition = self.make_composable_module_definition(ComposableModuleDescriptor {
             source: desc.source,
             file_path: desc.file_path,
             language: desc.shader_type.into(),
@@ -271,24 +271,42 @@ impl Composer {
             shader_defs: desc.shader_defs,
         })?;
 
+        let import_graph = ImportGraph::new(&self.module_sets)?;
+        let used_imports = import_graph.collect_imports(&definition.name);
+
         let shader_defs = {
             let defs = definition.shader_defs.clone();
-            let mut all_imported_modules = HashSet::new();
-            self.collect_all_imports(&definition.name, &mut all_imported_modules)?;
-            self.collect_shader_defs(&all_imported_modules, &mut defs);
+            self.collect_shader_defs(&used_imports, &mut defs);
             defs
         };
 
-        let processed = compose_parser::preprocess(self, &definition, &shader_defs)?;
+        let processed = HashMap::with_capacity(used_imports.len());
+        for import in &used_imports {
+            let module = self.module_sets.get(import).unwrap();
+            let preprocessed = compose_parser::preprocess(self, &module, &shader_defs)?;
+            processed.insert(import.clone(), preprocessed);
+        }
+
+        let headers = HashMap::with_capacity(used_imports.len());
+        import_graph.depth_first_visit(&definition.name, |module, imports| {
+            self.create_composable_module(
+                module_set,
+                Self::decorate(&module_set.name),
+                shader_defs,
+                true,
+                true,
+                &preprocessed_source,
+                imports,
+            );
+        });
 
         // TODO:
-        // - Replace all :: names with randomly generated names. Merge that logic into compose_parser::preprocess
         // - Build naga modules, starting with the ones that have zero dependencies.
         // - Then construct a header, and build the next module. Use the aliases here.
         // - Name mangling.
 
         self.ensure_imports(
-            imports.iter().map(|import| &import.definition),
+            import_graph.iter().map(|import| &import.definition),
             &shader_defs,
         )?;
         self.ensure_imports(additional_imports, &shader_defs)?;
@@ -367,40 +385,6 @@ impl Composer {
             entry_points,
             ..derived.into()
         };
-
-        // apply overrides
-        if !composable.override_functions.is_empty() {
-            let mut redirect = Redirector::new(naga_module);
-
-            for (base_function, overrides) in composable.override_functions {
-                let mut omit = HashSet::default();
-
-                let mut original = base_function;
-                for replacement in overrides {
-                    let (_h_orig, _h_replace) = redirect
-                        .redirect_function(&original, &replacement, &omit)
-                        .map_err(|e| ComposerError {
-                            inner: e.into(),
-                            source: ErrSource::Constructing {
-                                path: file_path.to_owned(),
-                                source: preprocessed_source.clone(),
-                                offset: composable.start_offset,
-                            },
-                        })?;
-                    omit.insert(replacement.clone());
-                    original = replacement;
-                }
-            }
-
-            naga_module = redirect.into_module().map_err(|e| ComposerError {
-                inner: e.into(),
-                source: ErrSource::Constructing {
-                    path: file_path.to_owned(),
-                    source: preprocessed_source.clone(),
-                    offset: composable.start_offset,
-                },
-            })?;
-        }
 
         // validation
         if self.validate {
