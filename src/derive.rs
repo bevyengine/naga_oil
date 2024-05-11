@@ -378,42 +378,42 @@ impl<'a> DerivedModule<'a> {
                         result,
                     } => match mode {
                         GatherMode::BroadcastFirst => {
-                            return Statement::SubgroupGather {
+                            Statement::SubgroupGather {
                                 mode: *mode,
                                 argument: map_expr!(argument),
                                 result: map_expr!(result),
                             }
                         }
                         GatherMode::Broadcast(hnd) => {
-                            return Statement::SubgroupGather {
+                            Statement::SubgroupGather {
                                 mode: GatherMode::Broadcast(map_expr!(hnd)),
                                 argument: map_expr!(argument),
                                 result: map_expr!(result),
                             }
                         }
                         GatherMode::Shuffle(hnd) => {
-                            return Statement::SubgroupGather {
+                            Statement::SubgroupGather {
                                 mode: GatherMode::Shuffle(map_expr!(hnd)),
                                 argument: map_expr!(argument),
                                 result: map_expr!(result),
                             }
                         }
                         GatherMode::ShuffleDown(hnd) => {
-                            return Statement::SubgroupGather {
+                            Statement::SubgroupGather {
                                 mode: GatherMode::ShuffleDown(map_expr!(hnd)),
                                 argument: map_expr!(argument),
                                 result: map_expr!(result),
                             }
                         }
                         GatherMode::ShuffleUp(hnd) => {
-                            return Statement::SubgroupGather {
+                            Statement::SubgroupGather {
                                 mode: GatherMode::ShuffleUp(map_expr!(hnd)),
                                 argument: map_expr!(argument),
                                 result: map_expr!(result),
                             }
                         }
                         GatherMode::ShuffleXor(hnd) => {
-                            return Statement::SubgroupGather {
+                            Statement::SubgroupGather {
                                 mode: GatherMode::ShuffleXor(map_expr!(hnd)),
                                 argument: map_expr!(argument),
                                 result: map_expr!(result),
