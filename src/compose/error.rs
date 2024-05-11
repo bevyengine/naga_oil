@@ -226,7 +226,8 @@ impl ComposerError {
             ),
             #[cfg(feature = "glsl")]
             ComposerErrorInner::GlslParseError(e) => (
-                e.errors.iter()
+                e.errors
+                    .iter()
                     .map(|naga::front::glsl::Error { kind, meta }| {
                         Label::primary((), map_span(meta.to_range().unwrap_or(0..0)))
                             .with_message(kind.to_string())

@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 use naga::{
     Arena, AtomicFunction, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
-    FunctionResult, GlobalVariable, Handle, ImageQuery, LocalVariable, Module, SampleLevel, Span,
-    Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
+    FunctionResult, GatherMode, GlobalVariable, Handle, ImageQuery, LocalVariable, Module,
+    Override, SampleLevel, Span, Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -368,9 +368,69 @@ impl<'a> DerivedModule<'a> {
                     | Statement::Continue
                     | Statement::Kill
                     | Statement::Barrier(_) => stmt.clone(),
-                    Statement::SubgroupBallot { result, predicate } => todo!(),
-                    Statement::SubgroupGather { mode, argument, result } => todo!(),
-                    Statement::SubgroupCollectiveOperation { op, collective_op, argument, result } => todo!(),
+                    Statement::SubgroupBallot { result, predicate } => Statement::SubgroupBallot {
+                        result: map_expr!(result),
+                        predicate: map_expr_opt!(predicate),
+                    },
+                    Statement::SubgroupGather {
+                        mode,
+                        argument,
+                        result,
+                    } => match mode {
+                        GatherMode::BroadcastFirst => {
+                            return Statement::SubgroupGather {
+                                mode: *mode,
+                                argument: map_expr!(argument),
+                                result: map_expr!(result),
+                            }
+                        }
+                        GatherMode::Broadcast(hnd) => {
+                            return Statement::SubgroupGather {
+                                mode: GatherMode::Broadcast(map_expr!(hnd)),
+                                argument: map_expr!(argument),
+                                result: map_expr!(result),
+                            }
+                        }
+                        GatherMode::Shuffle(hnd) => {
+                            return Statement::SubgroupGather {
+                                mode: GatherMode::Shuffle(map_expr!(hnd)),
+                                argument: map_expr!(argument),
+                                result: map_expr!(result),
+                            }
+                        }
+                        GatherMode::ShuffleDown(hnd) => {
+                            return Statement::SubgroupGather {
+                                mode: GatherMode::ShuffleDown(map_expr!(hnd)),
+                                argument: map_expr!(argument),
+                                result: map_expr!(result),
+                            }
+                        }
+                        GatherMode::ShuffleUp(hnd) => {
+                            return Statement::SubgroupGather {
+                                mode: GatherMode::ShuffleUp(map_expr!(hnd)),
+                                argument: map_expr!(argument),
+                                result: map_expr!(result),
+                            }
+                        }
+                        GatherMode::ShuffleXor(hnd) => {
+                            return Statement::SubgroupGather {
+                                mode: GatherMode::ShuffleXor(map_expr!(hnd)),
+                                argument: map_expr!(argument),
+                                result: map_expr!(result),
+                            }
+                        }
+                    },
+                    Statement::SubgroupCollectiveOperation {
+                        op,
+                        collective_op,
+                        argument,
+                        result,
+                    } => Statement::SubgroupCollectiveOperation {
+                        op: *op,
+                        collective_op: *collective_op,
+                        argument: map_expr!(argument),
+                        result: map_expr!(result),
+                    },
                 }
             })
             .collect();
@@ -594,10 +654,14 @@ impl<'a> DerivedModule<'a> {
                     committed: *committed,
                 }
             }
-            // TODO: Probably wrong
-            Expression::Override(_) => expr.clone(),
-            Expression::SubgroupBallotResult => todo!(),
-            Expression::SubgroupOperationResult { ty } => todo!(),
+            Expression::Override(_) => {
+                // TODO: unsure if this is correct
+                expr.clone()
+            }
+            Expression::SubgroupBallotResult => expr.clone(),
+            Expression::SubgroupOperationResult { ty } => Expression::SubgroupOperationResult {
+                ty: self.import_type(ty),
+            },
         };
 
         if !non_emitting_only || is_external {
@@ -754,7 +818,7 @@ impl<'a> From<DerivedModule<'a>> for naga::Module {
             types: derived.types,
             constants: derived.constants,
             global_variables: derived.globals,
-            // TODO: Maybe wrong
+            // TODO: Need to also include override expressions
             global_expressions: Rc::try_unwrap(derived.const_expressions)
                 .unwrap()
                 .into_inner(),
