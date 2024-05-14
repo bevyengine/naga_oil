@@ -1002,6 +1002,17 @@ impl Composer {
             }
         }
 
+        // These are naga/wgpu's pipeline override constants, not naga_oil's overrides
+        let mut owned_pipeline_overrides = IndexMap::new();
+        for (h, po) in source_ir.overrides.iter_mut() {
+            if let Some(name) = po.name.as_mut() {
+                if !name.contains(DECORATION_PRE) {
+                    *name = format!("{name}{module_decoration}");
+                    owned_pipeline_overrides.insert(name.clone(), h);
+                }
+            }
+        }
+
         let mut owned_vars = IndexMap::new();
         for (h, gv) in source_ir.global_variables.iter_mut() {
             if let Some(name) = gv.name.as_mut() {
@@ -1099,6 +1110,11 @@ impl Composer {
         for h in owned_constants.values() {
             header_builder.import_const(h);
             module_builder.import_const(h);
+        }
+
+        for h in owned_pipeline_overrides.values() {
+            header_builder.import_pipeline_override(h);
+            module_builder.import_pipeline_override(h);
         }
 
         for h in owned_vars.values() {
@@ -1222,6 +1238,16 @@ impl Composer {
                     && items.map_or(true, |items| items.contains(name))
                 {
                     derived.import_const(&h);
+                }
+            }
+        }
+
+        for (h, po) in source_ir.overrides.iter() {
+            if let Some(name) = &po.name {
+                if composable.owned_functions.contains(name)
+                    && items.map_or(true, |items| items.contains(name))
+                {
+                    derived.import_pipeline_override(&h);
                 }
             }
         }
