@@ -6,7 +6,7 @@ use crate::{derive::DerivedModule, redirect::Redirector};
 
 use self::composer::{
     ComposableModuleDefinition, Composer, ComposerError, ComposerErrorInner, ErrSource,
-    ImportGraph, ModuleName, ShaderDefValue,
+    ImportGraph, ModuleImports, ModuleName, ShaderDefValue,
 };
 
 mod compose_parser;
@@ -141,7 +141,6 @@ pub mod composer;
 pub mod error;
 pub mod preprocess;
 mod test;
-pub mod tokenizer;
 pub mod util;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,7 +256,9 @@ impl Composer {
     /// TODO:
     /// - @binding(auto) for auto-binding
     /// - virtual and override
-    /// build a naga shader module
+    /// - mod::func in the source code
+    ///
+    /// Builds a naga shader module
     pub fn make_naga_module(
         &mut self,
         desc: NagaModuleDescriptor,
@@ -266,65 +267,49 @@ impl Composer {
             source: desc.source,
             file_path: desc.file_path,
             language: desc.shader_type.into(),
-            as_name: None,
             additional_imports: desc.additional_imports,
             shader_defs: desc.shader_defs,
+            // TODO: Pick a UUID for the module name
+            as_name: Some("naga_module_entry_point".to_owned()),
         })?;
-
-        let import_graph = ImportGraph::new(&self.module_sets)?;
-        let used_imports = import_graph.collect_imports(&definition.name);
-
-        let shader_defs = {
-            let defs = definition.shader_defs.clone();
-            self.collect_shader_defs(&used_imports, &mut defs);
-            defs
-        };
+        let module_imports = ModuleImports::new(definition, &self.module_sets)?;
+        let used_imports = module_imports
+            .import_graph
+            .collect_imports(&definition.name);
+        let shader_defs =
+            module_imports.collect_shader_defs(&used_imports, definition.shader_defs.clone())?;
 
         let processed = HashMap::with_capacity(used_imports.len());
+        processed.insert(
+            definition.name.clone(),
+            compose_parser::preprocess(&module_imports, &definition, &shader_defs)?,
+        );
         for import in &used_imports {
-            let module = self.module_sets.get(import).unwrap();
-            let preprocessed = compose_parser::preprocess(self, &module, &shader_defs)?;
+            let module = module_imports.modules.get(import).unwrap();
+            let preprocessed = compose_parser::preprocess(&module_imports, &module, &shader_defs)?;
             processed.insert(import.clone(), preprocessed);
         }
 
-        let headers = HashMap::with_capacity(used_imports.len());
-        import_graph.depth_first_visit(&definition.name, |module, imports| {
-            self.create_composable_module(
-                module_set,
-                Self::decorate(&module_set.name),
-                shader_defs,
-                true,
-                true,
-                &preprocessed_source,
-                imports,
-            );
-        });
+        /*let compiled = HashMap::with_capacity(used_imports.len());
+                module_imports
+                    .import_graph
+                    .depth_first_visit(&definition.name, |module_name, imports| {
+                        let result = self
+                            .compile_to_naga_ir(
+                                &processed.get(module_name).unwrap(),
+                                &compiled,
+                                module_imports.import_graph,
+                                definition.alias_to_path,
+                            )
+                            .unwrap();
+                        compiled.insert(module_name.to_owned(), (result.module, result.header));
+                    });
 
-        // TODO:
-        // - Build naga modules, starting with the ones that have zero dependencies.
-        // - Then construct a header, and build the next module. Use the aliases here.
-        // - Name mangling.
-
-        self.ensure_imports(
-            import_graph.iter().map(|import| &import.definition),
-            &shader_defs,
-        )?;
-        self.ensure_imports(additional_imports, &shader_defs)?;
-
-        let PreprocessOutput {
-            preprocessed_source,
-            imports,
-        } = self
-            .preprocessor
-            .preprocess(&sanitized_source, &shader_defs, self.validate)
-            .map_err(|inner| ComposerError {
-                inner,
-                source: ErrSource::Constructing {
-                    path: file_path.to_owned(),
-                    source: sanitized_source,
-                    offset: 0,
-                },
-            })?;
+                // TODO:
+                // - Build naga modules, starting with the ones that have zero dependencies.
+                // - Then construct a header, and build the next module. Use the aliases here.
+                // - Name mangling.
+        */
 
         let composable = self
             .create_composable_module(
@@ -333,8 +318,7 @@ impl Composer {
                 &shader_defs,
                 false,
                 false,
-                &preprocessed_source,
-                imports,
+                &processed,
             )
             .map_err(|e| ComposerError {
                 inner: e.inner,
@@ -345,6 +329,7 @@ impl Composer {
                 },
             })?;
 
+        // And build the final thingy
         let mut derived = DerivedModule::default();
 
         let mut already_added = Default::default();

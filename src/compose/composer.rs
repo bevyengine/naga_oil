@@ -127,27 +127,30 @@ pub struct ComposableModuleDefinition {
 }
 
 impl ComposableModuleDefinition {
-    pub fn get_imports(&self, module_sets: &HashMap<ModuleName, ComposableModuleDefinition>) -> Result<Vec<ImportDefinition>, ComposerError> {
-        self
-                .additional_imports
-                .iter()
-                .map(|(_, import)| Ok(import.clone()))
-                .chain(self.shader_imports.iter().map(|import| {
-                    match get_imported_module(module_sets, import) {
-                        Some(v) => Ok(v.definition),
-                        None => Err(ComposerError {
-                            inner: ComposerErrorInner::ImportNotFound(
-                                import.path.to_owned(),
-                                import.offset,
-                            ),
-                            source: ErrSource::Module {
-                                name: self.name.0.to_string(),
-                                offset: import.offset,
-                                defs: self.shader_defs.clone(),
-                            },
-                        }),
-                    }
-                })).collect()
+    pub fn get_imports(
+        &self,
+        module_sets: &HashMap<ModuleName, ComposableModuleDefinition>,
+    ) -> Result<Vec<ImportDefinition>, ComposerError> {
+        self.additional_imports
+            .iter()
+            .map(|(_, import)| Ok(import.clone()))
+            .chain(self.shader_imports.iter().map(|import| {
+                match get_imported_module(module_sets, import) {
+                    Some(v) => Ok(v.definition),
+                    None => Err(ComposerError {
+                        inner: ComposerErrorInner::ImportNotFound(
+                            import.path.to_owned(),
+                            import.offset,
+                        ),
+                        source: ErrSource::Module {
+                            name: self.name.0.to_string(),
+                            offset: import.offset,
+                            defs: self.shader_defs.clone(),
+                        },
+                    }),
+                }
+            }))
+            .collect()
     }
 }
 
@@ -194,9 +197,20 @@ impl ImportGraph {
     }
 
     /// Visits all modules in topological order, ending with the entry point.
-    pub fn depth_first_visit(&self, entry_point: &ModuleName, callback: impl Fn(&ModuleName, &[ImportDefinition])) {
-        fn visit(module: &ModuleName, graph: &ImportGraph, callback: &impl Fn(&ModuleName, &[ImportDefinition]), visited: &mut HashSet<ModuleName>) {
-            if !visited.insert(module.clone()) {return;}
+    pub fn depth_first_visit(
+        &self,
+        entry_point: &ModuleName,
+        callback: impl Fn(&ModuleName, &[ImportDefinition]),
+    ) {
+        fn visit(
+            module: &ModuleName,
+            graph: &ImportGraph,
+            callback: &impl Fn(&ModuleName, &[ImportDefinition]),
+            visited: &mut HashSet<ModuleName>,
+        ) {
+            if !visited.insert(module.clone()) {
+                return;
+            }
             if let Some(imports) = graph.graph.get(module) {
                 for import in imports {
                     visit(&import.module, graph, callback, visited);
@@ -210,7 +224,7 @@ impl ImportGraph {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord,)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleName(pub(super) String);
 impl ModuleName {
     pub fn new<S: Into<String>>(name: S) -> Self {
@@ -222,7 +236,6 @@ impl std::fmt::Display for ModuleName {
         self.0.fmt(f)
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportDefinition {
@@ -449,7 +462,6 @@ impl Composer {
         name: &str,
         module: &PreprocessOutput,
         language: ShaderLanguage,
-        
     ) -> Result<IrBuildResult, ComposerError> {
         debug!("creating IR for {}", name);
 
@@ -678,19 +690,8 @@ impl Composer {
         demote_entrypoints: bool,
         source: &str,
         imports: Vec<ImportDefWithOffset>,
+        processed: HashMap<ModuleName, PreprocessOutput>,
     ) -> Result<ComposableModule, ComposerError> {
-        let mut imports: Vec<_> = imports
-            .into_iter()
-            .map(|import_with_offset| import_with_offset.definition)
-            .collect();
-        imports.extend(module_definition.additional_imports.to_vec());
-
-        trace!(
-            "create composable module {}: source len {}",
-            module_definition.name.0,
-            source.len()
-        );
-
         trace!(
             "create composable module {}: source len {}",
             module_definition.name.0,
@@ -699,7 +700,7 @@ impl Composer {
 
         let IrBuildResult {
             module: mut source_ir,
-            start_offset,,
+            start_offset,
         } = self.create_module_ir(
             &module_definition.name.0,
             source,
@@ -967,7 +968,6 @@ impl Composer {
             if let Some(name) = &f.name {
                 if composable.owned_functions.contains(name)
                     && items.map_or(true, |items| items.contains(name))
-                        
                 {
                     let span = composable.module_ir.functions.get_span(h_f);
                     derived.import_function_if_new(f, span);
@@ -1006,34 +1006,15 @@ impl Composer {
         );
     }
 
-    pub(super) fn collect_shader_defs(
-        &self,
-        imports: &HashSet<ModuleName>,
-        shader_defs: &mut HashMap<String, ShaderDefValue>,
-    ) -> Result<(), ComposerError> {
-        for import_name in imports {
-            // TODO: No unwrap pls
-            let module = self.module_sets.get(import_name).unwrap();
-            for (def, value) in module.shader_defs.iter() {
-                match shader_defs.insert(def.clone(), value.clone()) {
-                    Some(old_value) if &old_value != value => {
-                        return Err(ComposerError {
-                            inner: ComposerErrorInner::InconsistentShaderDefValue {
-                                def: def.clone(),
-                            },
-                            source: ErrSource::Constructing {
-                                path: module.file_path.to_owned(),
-                                source: module.source.to_owned(),
-                                offset: 0, // TODO: Set this properly
-                            },
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        Ok(())
+    pub(super) fn compile_to_naga_ir(
+        preprocessed: &PreprocessOutput,
+        compiled: &HashMap<ModuleName, NagaCompileResult>,
+        import_graph: &ImportGraph,
+        alias_to_path: &HashMap<String, String>,
+    ) {
+        // Super optimized implementation to compile the modules in topological order
+        // So that way, I only need to create each header once and can reuse it for all modules that import it.
+        todo!()
     }
 
     pub(super) fn make_composable_module_definition(
@@ -1178,6 +1159,11 @@ impl Composer {
     }
 }
 
+pub(super) struct NagaCompileResult {
+    pub(super) module: naga::Module,
+    // TODO: Header?
+}
+
 pub(super) fn get_imported_module(
     module_sets: &HashMap<ModuleName, ComposableModuleDefinition>,
     import: &FlattenedImport,
@@ -1219,4 +1205,53 @@ pub(super) fn get_imported_module(
         definition: ImportDefinition { module, item },
         offset: import.offset,
     })
+}
+
+#[derive(Debug)]
+pub(super) struct ModuleImports<'a> {
+    pub(super) entry_module: ComposableModuleDefinition,
+    pub(super) modules: &'a HashMap<ModuleName, ComposableModuleDefinition>,
+    pub(super) import_graph: ImportGraph,
+}
+
+impl<'a> ModuleImports<'a> {
+    pub fn new(
+        entry_module: ComposableModuleDefinition,
+        module_sets: &'a HashMap<ModuleName, ComposableModuleDefinition>,
+    ) -> Result<Self, ComposerError> {
+        Ok(Self {
+            entry_module,
+            modules: module_sets,
+            import_graph: ImportGraph::new(module_sets)?,
+        })
+    }
+
+    pub fn collect_shader_defs(
+        &self,
+        imports: &HashSet<ModuleName>,
+        mut shader_defs: HashMap<String, ShaderDefValue>,
+    ) -> Result<HashMap<String, ShaderDefValue>, ComposerError> {
+        for import_name in imports {
+            // TODO: No unwrap pls
+            let module = self.modules.get(import_name).unwrap();
+            for (def, value) in module.shader_defs.iter() {
+                match shader_defs.insert(def.clone(), value.clone()) {
+                    Some(old_value) if &old_value != value => {
+                        return Err(ComposerError {
+                            inner: ComposerErrorInner::InconsistentShaderDefValue {
+                                def: def.clone(),
+                            },
+                            source: ErrSource::Constructing {
+                                path: module.file_path.to_owned(),
+                                source: module.source.to_owned(),
+                                offset: 0, // TODO: Set this properly
+                            },
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(shader_defs)
+    }
 }

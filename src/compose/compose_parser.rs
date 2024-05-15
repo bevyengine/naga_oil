@@ -11,8 +11,8 @@ use crate::compose::preprocess::ResolvedIfOp;
 
 use super::{
     composer::{
-        get_imported_module, ComposableModuleDefinition, Composer, ComposerError,
-        ComposerErrorInner, ErrSource, ImportDefWithOffset, ShaderDefValue,
+        get_imported_module, ComposableModuleDefinition, ComposerError, ComposerErrorInner,
+        ErrSource, ImportDefWithOffset, ModuleImports, ShaderDefValue,
     },
     preprocess::{IfDefDirective, IfOpDirective, PreprocessorPart},
 };
@@ -20,12 +20,12 @@ use super::{
 type Stream<'a> = Stateful<&'a [PreprocessorPart], PreprocessingState<'a>>;
 
 pub(super) fn preprocess<'a>(
-    composer: &'a Composer,
+    module_sets: &'a ModuleImports<'a>,
     module: &'a ComposableModuleDefinition,
     shader_defs: &'a HashMap<String, ShaderDefValue>,
 ) -> Result<PreprocessOutput, ComposerError> {
     let state = PreprocessingState {
-        composer,
+        module_sets,
         module,
         shader_defs,
     };
@@ -50,8 +50,7 @@ pub(super) fn preprocess<'a>(
 
 #[derive(Debug, Clone)]
 struct PreprocessingState<'a> {
-    // Only needs to know which other modules are defined so that we can resolve imports
-    composer: &'a Composer,
+    module_sets: &'a ModuleImports<'a>,
     module: &'a ComposableModuleDefinition,
     shader_defs: &'a HashMap<String, ShaderDefValue>,
 }
@@ -107,7 +106,7 @@ fn top_level_preprocessor<'a>(input: &mut Stream<'a>) -> PResult<PreprocessOutpu
                     .into_iter()
                 {
                     let import =
-                        get_imported_module(&input.state.composer.module_sets, &import).unwrap(); // TODO: Error handling
+                        get_imported_module(&input.state.module_sets.modules, &import).unwrap(); // TODO: Error handling
 
                     imports.push(import)
                 }
