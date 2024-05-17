@@ -414,11 +414,10 @@ impl<'a> DerivedModule<'a> {
                         predicate: map_expr_opt!(predicate),
                     },
                     Statement::SubgroupGather {
-                        mode,
+                        mut mode,
                         argument,
                         result,
                     } => {
-                        let mut mode = mode.clone();
                         match mode {
                             GatherMode::BroadcastFirst => (),
                             GatherMode::Broadcast(ref mut h_src)
