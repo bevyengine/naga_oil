@@ -227,7 +227,7 @@ impl<'a> DerivedModule<'a> {
 
                 let new_override = Override {
                     name: pipeline_override.name.clone(),
-                    id: pipeline_override.id.clone(),
+                    id: pipeline_override.id,
                     ty: self.import_type(&pipeline_override.ty),
                     init: self.import_global_expression(pipeline_override.init),
                 };
