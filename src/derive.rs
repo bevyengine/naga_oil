@@ -11,22 +11,25 @@ pub struct DerivedModule<'a> {
     shader: Option<&'a Module>,
     span_offset: usize,
 
+    /// Maps the original type handle to the the mangled type handle.
     type_map: IndexMap<Handle<Type>, Handle<Type>>,
+    /// Maps the original const handle to the the mangled const handle.
     const_map: IndexMap<Handle<Constant>, Handle<Constant>>,
+    /// Maps the original pipeline override handle to the the mangled pipeline override handle.
     pipeline_override_map: IndexMap<Handle<Override>, Handle<Override>>,
-    // Contains both const expressions and pipeline override constant expressions.
-    // The expressions are stored together because that's what Naga expects.
+    /// Contains both const expressions and pipeline override constant expressions.
+    /// The expressions are stored together because that's what Naga expects.
+    global_expressions: Rc<RefCell<Arena<Expression>>>,
+    /// Maps the original expression handle to the new expression handle for const expressions and pipeline override expressions.
+    /// The expressions are stored together because that's what Naga expects.
     global_expression_map: Rc<RefCell<IndexMap<Handle<Expression>, Handle<Expression>>>>,
     global_map: IndexMap<Handle<GlobalVariable>, Handle<GlobalVariable>>,
     function_map: IndexMap<String, Handle<Function>>,
     types: UniqueArena<Type>,
     constants: Arena<Constant>,
-    // TODO: Figure out how to combine this with pipeline_override_expressions to avoid having to combine them later.
-    const_expressions: Rc<RefCell<Arena<Expression>>>,
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
     pipeline_overrides: Arena<Override>,
-    pipeline_override_expressions: Rc<RefCell<Arena<Expression>>>,
 }
 
 impl<'a> DerivedModule<'a> {
@@ -143,7 +146,7 @@ impl<'a> DerivedModule<'a> {
             let new_const = Constant {
                 name: c.name.clone(),
                 ty: self.import_type(&c.ty),
-                init: self.import_const_expression(c.init),
+                init: self.import_global_expression(Some(c.init)).unwrap(),
             };
 
             let span = self.shader.as_ref().unwrap().constants.get_span(*h_const);
@@ -171,7 +174,9 @@ impl<'a> DerivedModule<'a> {
                 space: gv.space,
                 binding: gv.binding.clone(),
                 ty: self.import_type(&gv.ty),
-                init: gv.init.map(|c| self.import_const_expression(c)),
+                init: gv
+                    .init
+                    .map(|c| self.import_global_expression(Some(c)).unwrap()),
             };
 
             let span = self
@@ -187,18 +192,26 @@ impl<'a> DerivedModule<'a> {
             new_h
         })
     }
-    // remap a const expression from source context into our derived context
-    pub fn import_const_expression(&mut self, h_cexpr: Handle<Expression>) -> Handle<Expression> {
-        self.import_expression(
-            h_cexpr,
-            &self.shader.as_ref().unwrap().global_expressions,
-            self.global_expression_map.clone(),
-            self.const_expressions.clone(),
-            false,
-            true,
-        )
+
+    // remap either a const or pipeline override expression from source context into our derived context
+    pub fn import_global_expression(
+        &mut self,
+        h_expr: Option<Handle<Expression>>,
+    ) -> Option<Handle<Expression>> {
+        match h_expr {
+            None => None,
+            Some(h_expr) => Some(self.import_expression(
+                h_expr,
+                &self.shader.as_ref().unwrap().global_expressions,
+                self.global_expression_map.clone(),
+                self.global_expressions.clone(),
+                false,
+                true,
+            )),
+        }
     }
 
+    // remap a pipeline override from source context into our derived context
     pub fn import_pipeline_override(&mut self, h_override: &Handle<Override>) -> Handle<Override> {
         self.pipeline_override_map
             .get(h_override)
@@ -216,7 +229,7 @@ impl<'a> DerivedModule<'a> {
                     name: pipeline_override.name.clone(),
                     id: pipeline_override.id.clone(),
                     ty: self.import_type(&pipeline_override.ty),
-                    init: self.import_pipeline_override_expression(pipeline_override.init),
+                    init: self.import_global_expression(pipeline_override.init),
                 };
 
                 let span = self
@@ -231,24 +244,6 @@ impl<'a> DerivedModule<'a> {
                 self.pipeline_override_map.insert(*h_override, new_h);
                 new_h
             })
-    }
-
-    // remap a const expression from source context into our derived context
-    pub fn import_pipeline_override_expression(
-        &mut self,
-        h_po_expr: Option<Handle<Expression>>,
-    ) -> Option<Handle<Expression>> {
-        match h_po_expr {
-            None => None,
-            Some(h_po_expr) => Some(self.import_expression(
-                h_po_expr,
-                &self.shader.as_ref().unwrap().global_expressions,
-                self.global_expression_map.clone(),
-                self.pipeline_override_expressions.clone(),
-                false,
-                true,
-            )),
-        }
     }
 
     // remap a block
@@ -569,7 +564,7 @@ impl<'a> DerivedModule<'a> {
                 gather: *gather,
                 coordinate: map_expr!(coordinate),
                 array_index: map_expr_opt!(array_index),
-                offset: offset.map(|c| self.import_const_expression(c)),
+                offset: offset.map(|c| self.import_global_expression(Some(c)).unwrap()),
                 level: match level {
                     SampleLevel::Auto | SampleLevel::Zero => *level,
                     SampleLevel::Exact(expr) => SampleLevel::Exact(map_expr!(expr)),
@@ -859,20 +854,13 @@ impl<'a> DerivedModule<'a> {
 
 impl<'a> From<DerivedModule<'a>> for naga::Module {
     fn from(derived: DerivedModule) -> Self {
-        // TODO: This is hideous. Naga's global_expressions is a combination of const expressions and pipeline override expressions,
-        // so we need to combine them here (or change DerivedModule to hold them together).
-        let mut temp = Rc::try_unwrap(derived.const_expressions).unwrap().into_inner();
-        let mut temp2 = Rc::try_unwrap(derived.pipeline_override_expressions).unwrap().into_inner();
-        temp2.drain().for_each(|(_, expr, span)| {
-            temp.append(expr, span);
-        });
-
         naga::Module {
             types: derived.types,
             constants: derived.constants,
             global_variables: derived.globals,
-            // TODO: Need to also include override expressions
-            global_expressions: temp,
+            global_expressions: Rc::try_unwrap(derived.global_expressions)
+                .unwrap()
+                .into_inner(),
             functions: derived.functions,
             special_types: Default::default(),
             entry_points: Default::default(),
