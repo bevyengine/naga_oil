@@ -146,7 +146,7 @@ impl<'a> DerivedModule<'a> {
             let new_const = Constant {
                 name: c.name.clone(),
                 ty: self.import_type(&c.ty),
-                init: self.import_global_expression(Some(c.init)).unwrap(),
+                init: self.import_global_expression(c.init),
             };
 
             let span = self.shader.as_ref().unwrap().constants.get_span(*h_const);
@@ -174,9 +174,7 @@ impl<'a> DerivedModule<'a> {
                 space: gv.space,
                 binding: gv.binding.clone(),
                 ty: self.import_type(&gv.ty),
-                init: gv
-                    .init
-                    .map(|c| self.import_global_expression(Some(c)).unwrap()),
+                init: gv.init.map(|c| self.import_global_expression(c)),
             };
 
             let span = self
@@ -194,21 +192,15 @@ impl<'a> DerivedModule<'a> {
     }
 
     // remap either a const or pipeline override expression from source context into our derived context
-    pub fn import_global_expression(
-        &mut self,
-        h_expr: Option<Handle<Expression>>,
-    ) -> Option<Handle<Expression>> {
-        match h_expr {
-            None => None,
-            Some(h_expr) => Some(self.import_expression(
-                h_expr,
-                &self.shader.as_ref().unwrap().global_expressions,
-                self.global_expression_map.clone(),
-                self.global_expressions.clone(),
-                false,
-                true,
-            )),
-        }
+    pub fn import_global_expression(&mut self, h_expr: Handle<Expression>) -> Handle<Expression> {
+        self.import_expression(
+            h_expr,
+            &self.shader.as_ref().unwrap().global_expressions,
+            self.global_expression_map.clone(),
+            self.global_expressions.clone(),
+            false,
+            true,
+        )
     }
 
     // remap a pipeline override from source context into our derived context
@@ -229,7 +221,9 @@ impl<'a> DerivedModule<'a> {
                     name: pipeline_override.name.clone(),
                     id: pipeline_override.id,
                     ty: self.import_type(&pipeline_override.ty),
-                    init: self.import_global_expression(pipeline_override.init),
+                    init: pipeline_override
+                        .init
+                        .map(|init| self.import_global_expression(init)),
                 };
 
                 let span = self
@@ -420,41 +414,24 @@ impl<'a> DerivedModule<'a> {
                         predicate: map_expr_opt!(predicate),
                     },
                     Statement::SubgroupGather {
-                        mode,
+                        mut mode,
                         argument,
                         result,
-                    } => match mode {
-                        GatherMode::BroadcastFirst => Statement::SubgroupGather {
-                            mode: *mode,
+                    } => {
+                        match mode {
+                            GatherMode::BroadcastFirst => (),
+                            GatherMode::Broadcast(ref mut h_src)
+                            | GatherMode::Shuffle(ref mut h_src)
+                            | GatherMode::ShuffleDown(ref mut h_src)
+                            | GatherMode::ShuffleUp(ref mut h_src)
+                            | GatherMode::ShuffleXor(ref mut h_src) => *h_src = map_expr!(h_src),
+                        };
+                        Statement::SubgroupGather {
+                            mode,
                             argument: map_expr!(argument),
                             result: map_expr!(result),
-                        },
-                        GatherMode::Broadcast(hnd) => Statement::SubgroupGather {
-                            mode: GatherMode::Broadcast(map_expr!(hnd)),
-                            argument: map_expr!(argument),
-                            result: map_expr!(result),
-                        },
-                        GatherMode::Shuffle(hnd) => Statement::SubgroupGather {
-                            mode: GatherMode::Shuffle(map_expr!(hnd)),
-                            argument: map_expr!(argument),
-                            result: map_expr!(result),
-                        },
-                        GatherMode::ShuffleDown(hnd) => Statement::SubgroupGather {
-                            mode: GatherMode::ShuffleDown(map_expr!(hnd)),
-                            argument: map_expr!(argument),
-                            result: map_expr!(result),
-                        },
-                        GatherMode::ShuffleUp(hnd) => Statement::SubgroupGather {
-                            mode: GatherMode::ShuffleUp(map_expr!(hnd)),
-                            argument: map_expr!(argument),
-                            result: map_expr!(result),
-                        },
-                        GatherMode::ShuffleXor(hnd) => Statement::SubgroupGather {
-                            mode: GatherMode::ShuffleXor(map_expr!(hnd)),
-                            argument: map_expr!(argument),
-                            result: map_expr!(result),
-                        },
-                    },
+                        }
+                    }
                     Statement::SubgroupCollectiveOperation {
                         op,
                         collective_op,
@@ -564,7 +541,7 @@ impl<'a> DerivedModule<'a> {
                 gather: *gather,
                 coordinate: map_expr!(coordinate),
                 array_index: map_expr_opt!(array_index),
-                offset: offset.map(|c| self.import_global_expression(Some(c)).unwrap()),
+                offset: offset.map(|c| self.import_global_expression(c)),
                 level: match level {
                     SampleLevel::Auto | SampleLevel::Zero => *level,
                     SampleLevel::Exact(expr) => SampleLevel::Exact(map_expr!(expr)),
