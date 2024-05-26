@@ -1304,8 +1304,24 @@ impl Composer {
                 },
             })?;
 
-        self.ensure_imports(imports.iter().map(|import| &import.definition), shader_defs)?;
-        self.ensure_imports(&module_set.additional_imports, shader_defs)?;
+        self.ensure_imports(
+            imports.iter().map(|import| &import.definition),
+            shader_defs,
+            ErrSource::Constructing {
+                path: module_set.file_path.to_owned(),
+                source: module_set.sanitized_source.clone(),
+                offset: 0,
+            },
+        )?;
+        self.ensure_imports(
+            &module_set.additional_imports,
+            shader_defs,
+            ErrSource::Constructing {
+                path: module_set.file_path.to_owned(),
+                source: module_set.sanitized_source.clone(),
+                offset: 0,
+            },
+        )?;
 
         self.create_composable_module(
             module_set,
@@ -1323,10 +1339,15 @@ impl Composer {
         &mut self,
         imports: impl IntoIterator<Item = &'a ImportDefinition>,
         shader_defs: &HashMap<String, ShaderDefValue>,
+        err_source: ErrSource,
     ) -> Result<(), ComposerError> {
         for ImportDefinition { import, .. } in imports.into_iter() {
-            // we've already ensured imports exist when they were added
-            let module_set = self.module_sets.get(import).unwrap();
+            let Some(module_set) = self.module_sets.get(import) else {
+                return Err(ComposerError {
+                    inner: ComposerErrorInner::ImportNotFound(import.to_owned(), 0),
+                    source: err_source,
+                });
+            };
             if module_set.get_module(shader_defs).is_some() {
                 continue;
             }
@@ -1611,7 +1632,7 @@ impl Composer {
                     inner: ComposerErrorInner::ImportNotFound(import_name.clone(), offset),
                     source: ErrSource::Constructing {
                         path: file_path.to_owned(),
-                        source: sanitized_source,
+                        source: sanitized_source.to_owned(),
                         offset: 0,
                     },
                 });
@@ -1620,8 +1641,21 @@ impl Composer {
         self.ensure_imports(
             imports.iter().map(|import| &import.definition),
             &shader_defs,
+            ErrSource::Constructing {
+                path: file_path.to_owned(),
+                source: sanitized_source.to_owned(),
+                offset: 0,
+            },
         )?;
-        self.ensure_imports(additional_imports, &shader_defs)?;
+        self.ensure_imports(
+            additional_imports,
+            &shader_defs,
+            ErrSource::Constructing {
+                path: file_path.to_owned(),
+                source: sanitized_source.to_owned(),
+                offset: 0,
+            },
+        )?;
 
         let definition = ComposableModuleDefinition {
             name,
