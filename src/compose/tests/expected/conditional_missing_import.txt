@@ -1,8 +1,8 @@
 error: required import 'b' not found
-  ┌─ tests/conditional_import_fail/top.wgsl:1:1
+  ┌─ tests/conditional_import_fail/top.wgsl:6:12
   │
-1 │ #ifdef USE_A
-  │ ^
+6 │     return b::C;
+  │            ^
   │
   = missing import 'b'
 
