@@ -1346,7 +1346,7 @@ impl Composer {
                 }
                 Err(e) => {
                     self.module_sets.insert(set_key, module_set);
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         }
