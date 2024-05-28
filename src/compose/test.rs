@@ -1117,9 +1117,9 @@ mod test {
 
         let text = error.emit_to_string(&composer);
 
-        let mut f = std::fs::File::create("conditional_missing_import.txt").unwrap();
-        f.write_all(text.as_bytes()).unwrap();
-        drop(f);
+        // let mut f = std::fs::File::create("conditional_missing_import.txt").unwrap();
+        // f.write_all(text.as_bytes()).unwrap();
+        // drop(f);
 
         output_eq!(text, "tests/expected/conditional_missing_import.txt");
     }
@@ -1155,9 +1155,9 @@ mod test {
 
         let text = error.emit_to_string(&composer);
 
-        let mut f = std::fs::File::create("conditional_missing_import_nested.txt").unwrap();
-        f.write_all(text.as_bytes()).unwrap();
-        drop(f);
+        // let mut f = std::fs::File::create("conditional_missing_import_nested.txt").unwrap();
+        // f.write_all(text.as_bytes()).unwrap();
+        // drop(f);
 
         output_eq!(text, "tests/expected/conditional_missing_import_nested.txt");
     }
