@@ -212,10 +212,17 @@ impl Composer {
 
     /// specify capabilities to be used for naga module generation.
     /// purges any existing modules
-    pub fn with_capabilities(self, capabilities: naga::valid::Capabilities) -> Self {
+    /// See https://github.com/gfx-rs/wgpu/blob/d9c054c645af0ea9ef81617c3e762fbf0f3fecda/wgpu-core/src/device/mod.rs#L515
+    /// for how to set the subgroup_stages value.
+    pub fn with_capabilities(
+        self,
+        capabilities: naga::valid::Capabilities,
+        subgroup_stages: naga::valid::ShaderStages,
+    ) -> Self {
         Self {
             capabilities,
             validate: self.validate,
+            subgroup_stages,
             ..Default::default()
         }
     }
@@ -373,9 +380,7 @@ impl Composer {
 
         // validation
         if self.validate {
-            let info =
-                naga::valid::Validator::new(naga::valid::ValidationFlags::all(), self.capabilities)
-                    .validate(&naga_module);
+            let info = self.create_validator().validate(&naga_module);
             match info {
                 Ok(_) => Ok(naga_module),
                 Err(e) => {

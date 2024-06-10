@@ -44,12 +44,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -90,12 +85,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -144,12 +134,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -322,12 +307,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -364,12 +344,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -418,12 +393,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -457,12 +427,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -552,12 +517,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -609,12 +569,7 @@ mod test {
         #[cfg(feature = "override_any")]
         {
             let module = module.unwrap();
-            let info = naga::valid::Validator::new(
-                naga::valid::ValidationFlags::all(),
-                naga::valid::Capabilities::default(),
-            )
-            .validate(&module)
-            .unwrap();
+            let info = composer.create_validator().validate(&module).unwrap();
             let wgsl = naga::back::wgsl::write_string(
                 &module,
                 &info,
@@ -664,12 +619,7 @@ mod test {
 
         // println!("{:#?}", module);
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -706,12 +656,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -747,12 +692,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -787,12 +727,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -828,12 +763,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -895,12 +825,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -961,12 +886,7 @@ mod test {
         // println!("{}", module.emit_to_string(&composer));
         // assert!(false);
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -1001,12 +921,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -1049,12 +964,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module_a)
-        .unwrap();
+        let info = composer.create_validator().validate(&module_a).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module_a,
             &info,
@@ -1076,12 +986,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module_b)
-        .unwrap();
+        let info = composer.create_validator().validate(&module_b).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module_b,
             &info,
@@ -1204,12 +1109,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -1243,12 +1143,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -1288,12 +1183,7 @@ mod test {
             })
             .unwrap();
 
-        let info = naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::default(),
-        )
-        .validate(&module)
-        .unwrap();
+        let info = composer.create_validator().validate(&module).unwrap();
         let wgsl = naga::back::wgsl::write_string(
             &module,
             &info,
@@ -1451,6 +1341,7 @@ mod test {
             ),
             module: &shader_module,
             entry_point: "run_test",
+            compilation_options: Default::default(),
         });
 
         let bindgroup = device.create_bind_group(&BindGroupDescriptor {
