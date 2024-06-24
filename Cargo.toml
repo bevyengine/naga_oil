@@ -30,8 +30,13 @@ unicode-ident = "1"
 once_cell = "1.17.0"
 indexmap = "2"
 winnow = { version = "0.6.7", features = ["unstable-recover"] }
+uuid = { version = "1.8.0", features = ["v4", "fast-rng"] }
 
 [dev-dependencies]
 wgpu = { version = "0.20", features = ["naga-ir"] }
 futures-lite = "1"
 tracing-subscriber = { version = "0.3", features = ["std", "fmt"] }
+
+[patch.crates-io]
+naga = { git = "https://github.com/stefnotch/wgpu/", branch = "compile-with-context" }
+wgpu = { git = "https://github.com/stefnotch/wgpu/", branch = "compile-with-context" }

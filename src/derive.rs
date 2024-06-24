@@ -6,50 +6,57 @@ use naga::{
 };
 use std::{cell::RefCell, rc::Rc};
 
-#[derive(Debug, Default)]
-pub struct DerivedModule<'a> {
-    shader: Option<&'a Module>,
+pub struct DerivedModuleEdit<'a> {
+    shader: &'a Module,
     span_offset: usize,
-
     /// Maps the original type handle to the the mangled type handle.
     type_map: IndexMap<Handle<Type>, Handle<Type>>,
     /// Maps the original const handle to the the mangled const handle.
     const_map: IndexMap<Handle<Constant>, Handle<Constant>>,
     /// Maps the original pipeline override handle to the the mangled pipeline override handle.
     pipeline_override_map: IndexMap<Handle<Override>, Handle<Override>>,
-    /// Contains both const expressions and pipeline override constant expressions.
-    /// The expressions are stored together because that's what Naga expects.
-    global_expressions: Rc<RefCell<Arena<Expression>>>,
     /// Maps the original expression handle to the new expression handle for const expressions and pipeline override expressions.
     /// The expressions are stored together because that's what Naga expects.
-    global_expression_map: Rc<RefCell<IndexMap<Handle<Expression>, Handle<Expression>>>>,
+    global_expression_map: IndexMap<Handle<Expression>, Handle<Expression>>,
     global_map: IndexMap<Handle<GlobalVariable>, Handle<GlobalVariable>>,
     function_map: IndexMap<String, Handle<Function>>,
+    module: &'a mut DerivedModule,
+}
+
+#[derive(Debug, Default)]
+pub struct DerivedModule {
     types: UniqueArena<Type>,
     constants: Arena<Constant>,
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
     pipeline_overrides: Arena<Override>,
+    /// Contains both const expressions and pipeline override constant expressions.
+    /// The expressions are stored together because that's what Naga expects.
+    global_expressions: Arena<Expression>,
+    entry_points: Vec<EntryPoint>,
 }
 
-impl<'a> DerivedModule<'a> {
+impl DerivedModule {
     // set source context for import operations
-    pub fn set_shader_source(&mut self, shader: &'a Module, span_offset: usize) {
-        self.clear_shader_source();
-        self.shader = Some(shader);
-        self.span_offset = span_offset;
+    pub fn set_shader_source<'a>(
+        &'a mut self,
+        shader: &'a Module,
+        span_offset: usize,
+    ) -> DerivedModuleEdit<'a> {
+        DerivedModuleEdit {
+            shader,
+            span_offset,
+            type_map: Default::default(),
+            const_map: Default::default(),
+            pipeline_override_map: Default::default(),
+            global_map: Default::default(),
+            global_expression_map: Default::default(),
+            function_map: Default::default(),
+            module: self,
+        }
     }
-
-    // detach source context
-    pub fn clear_shader_source(&mut self) {
-        self.shader = None;
-        self.type_map.clear();
-        self.const_map.clear();
-        self.global_map.clear();
-        self.global_expression_map.borrow_mut().clear();
-        self.pipeline_override_map.clear();
-    }
-
+}
+impl<'a> DerivedModuleEdit<'a> {
     pub fn map_span(&self, span: Span) -> Span {
         let span = span.to_range();
         match span {
@@ -63,27 +70,11 @@ impl<'a> DerivedModule<'a> {
 
     // remap a type from source context into our derived context
     pub fn import_type(&mut self, h_type: &Handle<Type>) -> Handle<Type> {
-        self.rename_type(h_type, None)
-    }
-
-    // remap a type from source context into our derived context, and rename it
-    pub fn rename_type(&mut self, h_type: &Handle<Type>, name: Option<String>) -> Handle<Type> {
         self.type_map.get(h_type).copied().unwrap_or_else(|| {
-            let ty = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .types
-                .get_handle(*h_type)
-                .unwrap();
-
-            let name = match name {
-                Some(name) => Some(name),
-                None => ty.name.clone(),
-            };
+            let ty = self.shader.types.get_handle(*h_type).unwrap();
 
             let new_type = Type {
-                name,
+                name: ty.name.clone(),
                 inner: match &ty.inner {
                     TypeInner::Scalar { .. }
                     | TypeInner::Vector { .. }
@@ -125,8 +116,8 @@ impl<'a> DerivedModule<'a> {
                     },
                 },
             };
-            let span = self.shader.as_ref().unwrap().types.get_span(*h_type);
-            let new_h = self.types.insert(new_type, self.map_span(span));
+            let span = self.shader.types.get_span(*h_type);
+            let new_h = self.module.types.insert(new_type, self.map_span(span));
             self.type_map.insert(*h_type, new_h);
             new_h
         })
@@ -135,13 +126,7 @@ impl<'a> DerivedModule<'a> {
     // remap a const from source context into our derived context
     pub fn import_const(&mut self, h_const: &Handle<Constant>) -> Handle<Constant> {
         self.const_map.get(h_const).copied().unwrap_or_else(|| {
-            let c = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .constants
-                .try_get(*h_const)
-                .unwrap();
+            let c = self.shader.constants.try_get(*h_const).unwrap();
 
             let new_const = Constant {
                 name: c.name.clone(),
@@ -149,8 +134,9 @@ impl<'a> DerivedModule<'a> {
                 init: self.import_global_expression(c.init),
             };
 
-            let span = self.shader.as_ref().unwrap().constants.get_span(*h_const);
+            let span = self.shader.constants.get_span(*h_const);
             let new_h = self
+                .module
                 .constants
                 .fetch_or_append(new_const, self.map_span(span));
             self.const_map.insert(*h_const, new_h);
@@ -161,13 +147,7 @@ impl<'a> DerivedModule<'a> {
     // remap a global from source context into our derived context
     pub fn import_global(&mut self, h_global: &Handle<GlobalVariable>) -> Handle<GlobalVariable> {
         self.global_map.get(h_global).copied().unwrap_or_else(|| {
-            let gv = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .global_variables
-                .try_get(*h_global)
-                .unwrap();
+            let gv = self.shader.global_variables.try_get(*h_global).unwrap();
 
             let new_global = GlobalVariable {
                 name: gv.name.clone(),
@@ -177,13 +157,9 @@ impl<'a> DerivedModule<'a> {
                 init: gv.init.map(|c| self.import_global_expression(c)),
             };
 
-            let span = self
-                .shader
-                .as_ref()
-                .unwrap()
-                .global_variables
-                .get_span(*h_global);
+            let span = self.shader.global_variables.get_span(*h_global);
             let new_h = self
+                .module
                 .globals
                 .fetch_or_append(new_global, self.map_span(span));
             self.global_map.insert(*h_global, new_h);
@@ -193,14 +169,25 @@ impl<'a> DerivedModule<'a> {
 
     // remap either a const or pipeline override expression from source context into our derived context
     pub fn import_global_expression(&mut self, h_expr: Handle<Expression>) -> Handle<Expression> {
-        self.import_expression(
+        let already_imported = Rc::new(RefCell::new(std::mem::take(
+            &mut self.global_expression_map,
+        )));
+        let new_expressions = Rc::new(RefCell::new(std::mem::take(
+            &mut self.module.global_expressions.clone(),
+        )));
+        let result = self.import_expression(
             h_expr,
-            &self.shader.as_ref().unwrap().global_expressions,
-            self.global_expression_map.clone(),
-            self.global_expressions.clone(),
+            &self.shader.global_expressions,
+            already_imported.clone(),
+            new_expressions.clone(),
             false,
             true,
-        )
+        );
+
+        self.global_expression_map = Rc::try_unwrap(already_imported).unwrap().into_inner();
+        self.module.global_expressions = Rc::try_unwrap(new_expressions).unwrap().into_inner();
+
+        result
     }
 
     // remap a pipeline override from source context into our derived context
@@ -209,13 +196,7 @@ impl<'a> DerivedModule<'a> {
             .get(h_override)
             .copied()
             .unwrap_or_else(|| {
-                let pipeline_override = self
-                    .shader
-                    .as_ref()
-                    .unwrap()
-                    .overrides
-                    .try_get(*h_override)
-                    .unwrap();
+                let pipeline_override = self.shader.overrides.try_get(*h_override).unwrap();
 
                 let new_override = Override {
                     name: pipeline_override.name.clone(),
@@ -226,13 +207,9 @@ impl<'a> DerivedModule<'a> {
                         .map(|init| self.import_global_expression(init)),
                 };
 
-                let span = self
-                    .shader
-                    .as_ref()
-                    .unwrap()
-                    .overrides
-                    .get_span(*h_override);
+                let span = self.shader.overrides.get_span(*h_override);
                 let new_h = self
+                    .module
                     .pipeline_overrides
                     .fetch_or_append(new_override, self.map_span(span));
                 self.pipeline_override_map.insert(*h_override, new_h);
@@ -779,7 +756,7 @@ impl<'a> DerivedModule<'a> {
         let name = func.name.as_ref().unwrap().clone();
         let mapped_func = self.localize_function(func);
         let new_span = self.map_span(span);
-        let new_h = self.functions.append(mapped_func, new_span);
+        let new_h = self.module.functions.append(mapped_func, new_span);
         self.function_map.insert(name, new_h);
         new_h
     }
@@ -787,7 +764,7 @@ impl<'a> DerivedModule<'a> {
     // get the derived handle corresponding to the given source function handle
     // requires func to be named
     pub fn map_function_handle(&mut self, h_func: &Handle<Function>) -> Handle<Function> {
-        let functions = &self.shader.as_ref().unwrap().functions;
+        let functions = &self.shader.functions;
         let func = functions.try_get(*h_func).unwrap();
         let name = func.name.as_ref().unwrap();
         self.function_map.get(name).copied().unwrap_or_else(|| {
@@ -807,10 +784,9 @@ impl<'a> DerivedModule<'a> {
         self.import_function(func, span)
     }
 
-    pub fn into_module_with_entrypoints(mut self) -> naga::Module {
-        let entry_points = self
+    pub fn import_entrypoints(&mut self) {
+        let entry_points: Vec<_> = self
             .shader
-            .unwrap()
             .entry_points
             .iter()
             .map(|ep| EntryPoint {
@@ -821,26 +797,20 @@ impl<'a> DerivedModule<'a> {
                 function: self.localize_function(&ep.function),
             })
             .collect();
-
-        naga::Module {
-            entry_points,
-            ..self.into()
-        }
+        self.module.entry_points.extend(entry_points);
     }
 }
 
-impl<'a> From<DerivedModule<'a>> for naga::Module {
+impl From<DerivedModule> for naga::Module {
     fn from(derived: DerivedModule) -> Self {
         naga::Module {
             types: derived.types,
             constants: derived.constants,
             global_variables: derived.globals,
-            global_expressions: Rc::try_unwrap(derived.global_expressions)
-                .unwrap()
-                .into_inner(),
+            global_expressions: derived.global_expressions,
             functions: derived.functions,
             special_types: Default::default(),
-            entry_points: Default::default(),
+            entry_points: derived.entry_points,
             overrides: derived.pipeline_overrides,
         }
     }

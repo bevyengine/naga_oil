@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use compiled_module::ModuleGlobal;
 use naga::EntryPoint;
 
 use crate::{derive::DerivedModule, redirect::Redirector};
@@ -9,6 +10,7 @@ use self::composer::{
     ImportGraph, ModuleImports, ModuleName, ShaderDefValue,
 };
 
+mod compiled_module;
 mod compose_parser;
 /// the compose module allows construction of shaders from modules (which are themselves shaders).
 ///
@@ -141,7 +143,27 @@ pub mod composer;
 pub mod error;
 pub mod preprocess;
 mod test;
-pub mod util;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompileId(String);
+
+impl CompileId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+}
+
+impl Default for CompileId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for CompileId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdditionalImport {
@@ -195,6 +217,16 @@ pub struct NagaModuleDescriptor<'a> {
     pub shader_type: ShaderType,
     pub additional_imports: &'a [AdditionalImport],
     pub shader_defs: HashMap<String, ShaderDefValue>,
+}
+
+pub fn mangle(module: &ModuleName, name: &str) -> String {
+    format!("{}_{}", module.0, name)
+}
+pub fn unmangle(name: &str) -> (ModuleName, String) {
+    let mut parts = name.split('_');
+    let module = ModuleName(parts.next().unwrap().to_owned());
+    let name = parts.collect();
+    (module, name)
 }
 
 // public api
@@ -276,65 +308,86 @@ impl Composer {
             language: desc.shader_type.into(),
             additional_imports: desc.additional_imports,
             shader_defs: desc.shader_defs,
-            // TODO: Pick a UUID for the module name
-            as_name: Some("naga_module_entry_point".to_owned()),
+            // We pick a unique name for the main module
+            as_name: Some(format!("main_module_{}", uuid::Uuid::new_v4())),
         })?;
         let module_imports = ModuleImports::new(definition, &self.module_sets)?;
-        let used_imports = module_imports
-            .import_graph
-            .collect_imports(&definition.name);
-        let shader_defs =
-            module_imports.collect_shader_defs(&used_imports, definition.shader_defs.clone())?;
+        let reachable_modules = module_imports.import_graph.get_reachable(&definition.name);
+        let shader_defs = module_imports
+            .collect_shader_defs(&reachable_modules, definition.shader_defs.clone())?;
 
-        let processed = HashMap::with_capacity(used_imports.len());
-        processed.insert(
-            definition.name.clone(),
-            compose_parser::preprocess(&module_imports, &definition, &shader_defs)?,
-        );
-        for import in &used_imports {
-            let module = module_imports.modules.get(import).unwrap();
-            let preprocessed = compose_parser::preprocess(&module_imports, &module, &shader_defs)?;
-            processed.insert(import.clone(), preprocessed);
+        let mut naga_parser = naga::front::wgsl::Frontend::new();
+        let mut processed_sources = HashMap::with_capacity(1 + reachable_modules.len());
+        let mut processed_ast = HashMap::with_capacity(1 + reachable_modules.len());
+
+        let all_module_definitions = reachable_modules
+            .iter()
+            .map(|name: &ModuleName| module_imports.modules.get(name).unwrap())
+            .chain(std::iter::once(&definition));
+
+        for module in all_module_definitions.into_iter() {
+            let preprocessed_source =
+                compose_parser::preprocess(&module_imports, module, &shader_defs)?;
+            processed_sources.insert(module.name.clone(), preprocessed_source);
+
+            let ast = naga_parser
+                .parse_to_ast(&processed_sources[&module.name].source)
+                .unwrap(); // TODO: Handle errors
+            processed_ast.insert(module.name.clone(), ast);
         }
 
-        /*let compiled = HashMap::with_capacity(used_imports.len());
-                module_imports
-                    .import_graph
-                    .depth_first_visit(&definition.name, |module_name, imports| {
-                        let result = self
-                            .compile_to_naga_ir(
-                                &processed.get(module_name).unwrap(),
-                                &compiled,
-                                module_imports.import_graph,
-                                definition.alias_to_path,
-                            )
-                            .unwrap();
-                        compiled.insert(module_name.to_owned(), (result.module, result.header));
-                    });
+        let compiled = HashMap::with_capacity(reachable_modules.len());
+        module_imports
+            .import_graph
+            .depth_first_visit(&definition.name, |module_name, imports| {
+                let result = self
+                    .compile_to_naga_ir(
+                        &processed_ast[module_name],
+                        &module_name,
+                        &processed_sources[module_name].imports,
+                        &compiled,
+                        &definition.alias_to_path,
+                    )
+                    .unwrap();
+                compiled.insert(module_name.to_owned(), result);
+            });
 
-                // TODO:
-                // - Build naga modules, starting with the ones that have zero dependencies.
-                // - Then construct a header, and build the next module. Use the aliases here.
-                // - Name mangling.
-        */
+        let main_module = self.compile_to_naga_ir(
+            &processed_ast[&definition.name],
+            &definition.name,
+            &processed_sources[&definition.name].imports,
+            &compiled,
+            &definition.alias_to_path,
+        )?;
+        compiled.insert(main_module.name.clone(), main_module);
 
-        let composable = self
-            .create_composable_module(
-                &definition,
-                String::from(""),
-                &shader_defs,
-                false,
-                false,
-                &processed,
-            )
-            .map_err(|e| ComposerError {
-                inner: e.inner,
-                source: ErrSource::Constructing {
-                    path: definition.file_path.to_owned(),
-                    source: preprocessed_source.clone(),
-                    offset: e.source.offset(),
-                },
-            })?;
+        // Now I have a ton of modules with properly mangled names, and header fragments.
+        // Then I need to iterate over them in the import graph order, and copy everything to the final module.
+
+        // TODO: This is one approach for copying the modules in a way that preserves the original ordering.
+        // *But*, does naga's WGSL emitter even remotely try to preserve the original ordering?
+        // final module
+        // names_in_final = HashMap<name, Item>
+        // for module in depth first order {
+        //     for item in module {
+        //         if item.name starts with module.name {
+        //
+
+        //             add to names_in_final
+        //         }
+        //     }
+        //}
+        // for module in depth first order {
+        //     for item in module {
+        //         if item.name starts with module.name {
+        //             iterate over item.name, and replace every named item with a names_in_final item.
+        //             replace the placeholder with the actual item.
+        //         }
+        //     }
+        //}
+
+        // While copying, the header items will be replaced with the actual items.
+        // And also pls set the spans correctly.
 
         // And build the final thingy
         let mut derived = DerivedModule::default();

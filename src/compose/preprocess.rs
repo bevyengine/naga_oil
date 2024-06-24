@@ -25,6 +25,7 @@ pub fn input_new(input: &str) -> Input {
 
 #[derive(Debug)]
 pub struct Preprocessed {
+    // TODO: replace with an Arena<PreprocessorPart>
     pub parts: Vec<PreprocessorPart>,
 }
 impl Preprocessed {
@@ -486,6 +487,7 @@ pub fn import_directive(input: &mut Input<'_>) -> PResult<ImportDirective> {
 
 #[derive(Debug, Clone)]
 pub enum ImportTree {
+    // TODO: Arena time!
     Path(Vec<Range<usize>>),
     Alias {
         path: Vec<Range<usize>>,

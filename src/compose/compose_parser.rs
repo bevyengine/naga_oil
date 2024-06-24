@@ -12,7 +12,7 @@ use crate::compose::preprocess::ResolvedIfOp;
 use super::{
     composer::{
         get_imported_module, ComposableModuleDefinition, ComposerError, ComposerErrorInner,
-        ErrSource, ImportDefWithOffset, ModuleImports, ShaderDefValue,
+        ErrSource, ImportDefWithOffset, ModuleImports, ModuleName, ShaderDefValue,
     },
     preprocess::{IfDefDirective, IfOpDirective, PreprocessorPart},
 };
@@ -317,7 +317,6 @@ fn act_on(a: &str, b: &str, op: &str) -> Result<bool, ()> {
     }
 }
 
-#[derive(Debug)]
 pub struct PreprocessOutput {
     pub source: String,
     pub imports: Vec<ImportDefWithOffset>,
@@ -325,4 +324,17 @@ pub struct PreprocessOutput {
     // When the user uses `a::b` in the source code, we mangle it to a random name before parsing.
     // This map is used to resolve the mangled names back to the original names.
     // pub source_alias_to_path: HashMap<String, String>,
+}
+
+impl PreprocessOutput {
+    pub fn get_import_items(&self) -> HashMap<ModuleName, Vec<&str>> {
+        let mut items = HashMap::new();
+        for import in &self.imports {
+            items
+                .entry(import.definition.module_name.clone())
+                .or_insert_with(Vec::new)
+                .push(import.definition.item.as_str());
+        }
+        items
+    }
 }
