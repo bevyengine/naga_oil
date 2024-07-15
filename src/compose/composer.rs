@@ -193,12 +193,12 @@ impl ImportGraph {
     pub fn depth_first_visit(
         &self,
         entry_point: &ModuleName,
-        callback: impl Fn(&ModuleName, &[ImportDefinition]),
+        mut callback: impl FnMut(&ModuleName),
     ) {
         fn visit(
             module: &ModuleName,
             graph: &ImportGraph,
-            callback: &impl Fn(&ModuleName, &[ImportDefinition]),
+            callback: &mut impl FnMut(&ModuleName),
             visited: &mut HashSet<ModuleName>,
         ) {
             if !visited.insert(module.clone()) {
@@ -208,12 +208,19 @@ impl ImportGraph {
                 for import in imports {
                     visit(&import.module_name, graph, callback, visited);
                 }
-                callback(module, imports);
+                callback(module);
             }
         }
 
         let mut visited = HashSet::new();
-        visit(entry_point, self, &callback, &mut visited);
+        visit(entry_point, self, &mut callback, &mut visited);
+    }
+
+    /// Returns all modules in topological order, ending with the entry point.
+    pub fn depth_first_order(&self, entry_point: &ModuleName) -> Vec<ModuleName> {
+        let mut items = vec![];
+        self.depth_first_visit(entry_point, |name| items.push(name.clone()));
+        items
     }
 }
 
@@ -255,7 +262,7 @@ pub struct Composer {
     /// See https://github.com/gfx-rs/wgpu/blob/d9c054c645af0ea9ef81617c3e762fbf0f3fecda/wgpu-core/src/device/mod.rs#L515
     /// for how to set this for proper subgroup ops support.
     pub subgroup_stages: ShaderStages,
-    compile_id: CompileId,
+    pub(super) compile_id: CompileId,
 }
 
 // shift for module index
@@ -307,101 +314,6 @@ impl Composer {
         validator
     }
 
-    fn naga_to_string(
-        &self,
-        naga_module: &mut naga::Module,
-        language: ShaderLanguage,
-        #[allow(unused)] header_for: &str, // Only used when GLSL is enabled
-    ) -> Result<String, ComposerErrorInner> {
-        // TODO: cache headers again
-        let info = self
-            .create_validator()
-            .validate(naga_module)
-            .map_err(ComposerErrorInner::HeaderValidationError)?;
-
-        match language {
-            ShaderLanguage::Wgsl => naga::back::wgsl::write_string(
-                naga_module,
-                &info,
-                naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
-            )
-            .map_err(ComposerErrorInner::WgslBackError),
-            #[cfg(feature = "glsl")]
-            ShaderLanguage::Glsl => {
-                let vec4 = naga_module.types.insert(
-                    naga::Type {
-                        name: None,
-                        inner: naga::TypeInner::Vector {
-                            size: naga::VectorSize::Quad,
-                            scalar: naga::Scalar::F32,
-                        },
-                    },
-                    naga::Span::UNDEFINED,
-                );
-                // add a dummy entry point for glsl headers
-                let dummy_entry_point = "dummy_module_entry_point".to_owned();
-                let func = naga::Function {
-                    name: Some(dummy_entry_point.clone()),
-                    arguments: Default::default(),
-                    result: Some(naga::FunctionResult {
-                        ty: vec4,
-                        binding: Some(naga::Binding::BuiltIn(naga::BuiltIn::Position {
-                            invariant: false,
-                        })),
-                    }),
-                    local_variables: Default::default(),
-                    expressions: Default::default(),
-                    named_expressions: Default::default(),
-                    body: Default::default(),
-                };
-                let ep = EntryPoint {
-                    name: dummy_entry_point.clone(),
-                    stage: naga::ShaderStage::Vertex,
-                    function: func,
-                    early_depth_test: None,
-                    workgroup_size: [0, 0, 0],
-                };
-
-                naga_module.entry_points.push(ep);
-
-                let info = self
-                    .create_validator()
-                    .validate(naga_module)
-                    .map_err(ComposerErrorInner::HeaderValidationError)?;
-
-                let mut string = String::new();
-                let options = naga::back::glsl::Options {
-                    version: naga::back::glsl::Version::Desktop(450),
-                    writer_flags: naga::back::glsl::WriterFlags::INCLUDE_UNUSED_ITEMS,
-                    ..Default::default()
-                };
-                let pipeline_options = naga::back::glsl::PipelineOptions {
-                    shader_stage: naga::ShaderStage::Vertex,
-                    entry_point: dummy_entry_point,
-                    multiview: None,
-                };
-                let mut writer = naga::back::glsl::Writer::new(
-                    &mut string,
-                    naga_module,
-                    &info,
-                    &options,
-                    &pipeline_options,
-                    naga::proc::BoundsCheckPolicies::default(),
-                )
-                .map_err(ComposerErrorInner::GlslBackError)?;
-
-                writer.write().map_err(ComposerErrorInner::GlslBackError)?;
-
-                // strip version decl and main() impl
-                let lines: Vec<_> = string.lines().collect();
-                let string = lines[1..lines.len() - 3].join("\n");
-                trace!("glsl header for {}:\n\"\n{:?}\n\"", header_for, string);
-
-                Ok(string)
-            }
-        }
-    }
-
     pub(super) fn compile_to_naga_ir(
         &self,
         input: &ParsedWgsl,
@@ -422,11 +334,11 @@ impl Composer {
 
         for (module_name, module_imports) in imports.into_iter() {
             let module: &CompiledModule = modules.get(module_name).unwrap();
-            let mut header_module_edit = header_module.set_shader_source(&module.module, 0); // TODO: Set span_offset properly
+            let mut header_module_edit = header_module.set_shader_source(&module.module, 0); // TODO: Set span_offset properly?
 
             for import in module_imports.iter() {
                 imported_items.insert(import.item.as_str(), module_name);
-                let item = module.get_item(&import.item).unwrap();
+                let item = module.get_export(&import.item).unwrap();
                 let header_item = match item {
                     ModuleGlobal::Struct(h) => {
                         ModuleGlobal::Struct(header_module_edit.import_type(&h))
@@ -440,12 +352,26 @@ impl Composer {
                     ModuleGlobal::GlobalVariable(h) => {
                         ModuleGlobal::GlobalVariable(header_module_edit.import_global(&h))
                     }
-                    ModuleGlobal::Function(h) => ModuleGlobal::Function(
-                        header_module_edit.import_function(
-                            module.module.functions.try_get(h).unwrap(),
-                            Default::default(),
-                        ), // TODO: Set span properly
-                    ),
+                    ModuleGlobal::Function(h) => {
+                        let f = module.module.functions.try_get(h).unwrap();
+                        // create dummy header function
+                        let header_function = naga::Function {
+                            name: f.name.clone(),
+                            arguments: f.arguments.clone(),
+                            result: f.result.clone(),
+                            local_variables: Default::default(),
+                            expressions: Default::default(),
+                            named_expressions: Default::default(),
+                            body: Default::default(),
+                        };
+
+                        ModuleGlobal::Function(
+                            header_module_edit.import_function(
+                                &header_function,
+                                module.module.functions.get_span(h),
+                            ),
+                        )
+                    }
                     ModuleGlobal::EntryPoint(_) => panic!("entry points should not be imported"), // TODO: Proper error handling
                 };
 
@@ -475,8 +401,8 @@ impl Composer {
                 // It's an imported item.
                 mangle(module_name, name)
             } else {
-                // It's an exported item. Rename it to have the module name prefix.
                 exports.insert(name.to_owned(), global_ref.to_module_global());
+                // It's an exported item. Rename it to have the module name prefix.
                 mangle(input_name, name)
             }
         });
@@ -666,18 +592,19 @@ pub(super) fn get_imported_module(
 
 #[derive(Debug)]
 pub(super) struct ModuleImports<'a> {
-    pub(super) entry_module: ComposableModuleDefinition,
+    pub(super) entry_name: ModuleName,
     pub(super) modules: &'a HashMap<ModuleName, ComposableModuleDefinition>,
     pub(super) import_graph: ImportGraph,
 }
 
 impl<'a> ModuleImports<'a> {
     pub fn new(
-        entry_module: ComposableModuleDefinition,
+        entry_name: ModuleName,
         module_sets: &'a HashMap<ModuleName, ComposableModuleDefinition>,
     ) -> Result<Self, ComposerError> {
+        assert!(module_sets.contains_key(&entry_name));
         Ok(Self {
-            entry_module,
+            entry_name,
             modules: module_sets,
             import_graph: ImportGraph::new(module_sets)?,
         })

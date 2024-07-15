@@ -8,7 +8,7 @@ use winnow::{
     Located, PResult, Parser,
 };
 
-use super::{composer::ImportDefWithOffset, ShaderDefValue};
+use super::ShaderDefValue;
 
 /**
  * The abstract syntax trees do not include spaces or comments. They are implicity there between adjacent tokens.
@@ -183,7 +183,7 @@ pub fn preprocess(input: &mut Input<'_>) -> PResult<Preprocessed> {
         if let Some(_) = opt(spaces_single_line).parse_next(input)? {
             if let Some(_) = opt(peek('#').span()).parse_next(input)? {
                 // It's a preprocessor directive
-                let (part, span): (Option<_>, _) = alt((
+                let (part, span): (Option<_>, std::ops::Range<_>) = alt((
                     version.map(PreprocessorPart::Version),
                     if_directive.map(|v| match v {
                         IfDirective::If(v) => PreprocessorPart::If(v),

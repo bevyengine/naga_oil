@@ -14,7 +14,7 @@ use thiserror::Error;
 use tracing::trace;
 
 use super::{ Composer, ShaderDefValue};
-use crate::{compose::SPAN_SHIFT, redirect::RedirectError};
+use crate::redirect::RedirectError;
 
 #[derive(Debug)]
 pub enum ErrSource {
@@ -33,12 +33,15 @@ pub enum ErrSource {
 impl ErrSource {
     pub fn path<'a>(&'a self, composer: &'a Composer) -> &'a String {
         match self {
-            ErrSource::Module { name, .. } => &composer.module_sets.get(name).unwrap().file_path,
+            ErrSource::Module { name, .. } =>&name, // TODO: &composer.module_sets.get(name).unwrap().file_path,
             ErrSource::Constructing { path, .. } => path,
         }
     }
 
     pub fn source<'a>(&'a self, composer: &'a Composer) -> Cow<'a, String> {
+        Cow::Owned(String::new())
+        // TODO:
+        /*
         match self {
             ErrSource::Module { name, defs, .. } => {
                 let raw_source = &composer.module_sets.get(name).unwrap().source;
@@ -55,7 +58,7 @@ impl ErrSource {
                 Cow::Owned(source)
             }
             ErrSource::Constructing { source, .. } => Cow::Borrowed(source),
-        }
+        } */
     }
 
     pub fn offset(&self) -> usize {
@@ -212,7 +215,9 @@ impl<'a> Iterator for ErrorSources<'a> {
 impl ComposerError {
     /// format a Composer error
     pub fn emit_to_string(&self, composer: &Composer) -> String {
-        composer.undecorate(&self.emit_to_string_internal(composer))
+        // TODO: composer.undecorate(&self.emit_to_string_internal(composer))
+
+        self.emit_to_string_internal(composer)
     }
 
     fn emit_to_string_internal(&self, composer: &Composer) -> String {
@@ -224,8 +229,10 @@ impl ComposerError {
         trace!("source offset: {}", source_offset);
 
         let map_span = |rng: Range<usize>| -> Range<usize> {
+            rng
+            /*TODO: Remap range
             ((rng.start & ((1 << SPAN_SHIFT) - 1)).saturating_sub(source_offset))
-                ..((rng.end & ((1 << SPAN_SHIFT) - 1)).saturating_sub(source_offset))
+                ..((rng.end & ((1 << SPAN_SHIFT) - 1)).saturating_sub(source_offset)) */
         };
 
         let files = SimpleFile::new(path, source.as_str());

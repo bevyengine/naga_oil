@@ -1,14 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map, HashMap};
 
-use compiled_module::ModuleGlobal;
-use naga::EntryPoint;
+use compiled_module::{CompiledModule, ModuleGlobal, NagaGlobalHandle};
+use naga::Handle;
 
-use crate::{derive::DerivedModule, redirect::Redirector};
+use crate::derive::{BasicGlobalCache, DerivedModule, GlobalCacher};
 
 use self::composer::{
-    ComposableModuleDefinition, Composer, ComposerError, ComposerErrorInner, ErrSource,
-    ImportGraph, ModuleImports, ModuleName, ShaderDefValue,
+    ComposableModuleDefinition, ComposerErrorInner, ErrSource, ModuleImports, ModuleName,
+    ShaderDefValue,
 };
+pub use self::composer::{Composer, ComposerError};
 
 mod compiled_module;
 mod compose_parser;
@@ -228,6 +229,13 @@ pub fn unmangle(name: &str) -> (ModuleName, String) {
     let name = parts.collect();
     (module, name)
 }
+/// Unmangle a name into a module and a name
+pub fn unmangle_ref(name: &str) -> (&str, &str) {
+    let mut parts = name.split('_');
+    let module = parts.next().unwrap();
+    let name = parts.next().unwrap();
+    (module, name)
+}
 
 // public api
 impl Composer {
@@ -271,20 +279,17 @@ impl Composer {
     ) -> Result<&ComposableModuleDefinition, ComposerError> {
         let module_set = self.make_composable_module_definition(desc)?;
 
-        if self.module_sets.contains_key(&module_set.name) {
-            return Err(ComposerError {
+        match self.module_sets.entry(module_set.name.clone()) {
+            hash_map::Entry::Occupied(_) => Err(ComposerError {
                 inner: ComposerErrorInner::ModuleAlreadyExists(module_set.name.0.clone()),
                 source: ErrSource::Constructing {
                     path: module_set.file_path.to_owned(),
                     source: module_set.source.to_owned(),
                     offset: 0,
                 },
-            });
+            }),
+            hash_map::Entry::Vacant(slot) => Ok(&*slot.insert(module_set)),
         }
-
-        let name = module_set.name.clone();
-        self.module_sets.insert(name.clone(), module_set);
-        Ok(self.module_sets.get(&name).unwrap())
     }
 
     /// remove a composable module
@@ -302,7 +307,7 @@ impl Composer {
         &mut self,
         desc: NagaModuleDescriptor,
     ) -> Result<naga::Module, ComposerError> {
-        let definition = self.make_composable_module_definition(ComposableModuleDescriptor {
+        let definition = self.add_composable_module(ComposableModuleDescriptor {
             source: desc.source,
             file_path: desc.file_path,
             language: desc.shader_type.into(),
@@ -311,125 +316,118 @@ impl Composer {
             // We pick a unique name for the main module
             as_name: Some(format!("main_module_{}", uuid::Uuid::new_v4())),
         })?;
-        let module_imports = ModuleImports::new(definition, &self.module_sets)?;
-        let reachable_modules = module_imports.import_graph.get_reachable(&definition.name);
-        let shader_defs = module_imports
-            .collect_shader_defs(&reachable_modules, definition.shader_defs.clone())?;
+        let name = definition.name.clone();
+        let result = self.make_naga_module_inner(name.clone());
+        self.remove_composable_module(&name);
+        result
+    }
+
+    fn make_naga_module_inner(
+        &mut self,
+        entry_point_name: ModuleName,
+    ) -> Result<naga::Module, ComposerError> {
+        let module_imports = ModuleImports::new(entry_point_name.clone(), &self.module_sets)?;
+        let reachable_modules = module_imports.import_graph.get_reachable(&entry_point_name);
+        let shader_defs = module_imports.collect_shader_defs(&reachable_modules, HashMap::new())?;
 
         let mut naga_parser = naga::front::wgsl::Frontend::new();
-        let mut processed_sources = HashMap::with_capacity(1 + reachable_modules.len());
-        let mut processed_ast = HashMap::with_capacity(1 + reachable_modules.len());
+        let mut processed_sources = HashMap::with_capacity(reachable_modules.len());
+        let mut processed_ast = HashMap::with_capacity(reachable_modules.len());
 
-        let all_module_definitions = reachable_modules
+        for module in reachable_modules
             .iter()
-            .map(|name: &ModuleName| module_imports.modules.get(name).unwrap())
-            .chain(std::iter::once(&definition));
-
-        for module in all_module_definitions.into_iter() {
+            .map(|name| module_imports.modules.get(name).unwrap())
+        {
             let preprocessed_source =
                 compose_parser::preprocess(&module_imports, module, &shader_defs)?;
             processed_sources.insert(module.name.clone(), preprocessed_source);
-
+        }
+        for module_name in reachable_modules.iter() {
             let ast = naga_parser
-                .parse_to_ast(&processed_sources[&module.name].source)
+                .parse_to_ast(&processed_sources[module_name].source)
                 .unwrap(); // TODO: Handle errors
-            processed_ast.insert(module.name.clone(), ast);
+            processed_ast.insert(module_name.clone(), ast);
         }
 
-        let compiled = HashMap::with_capacity(reachable_modules.len());
-        module_imports
+        let mut compiled = HashMap::with_capacity(reachable_modules.len());
+        let module_order = module_imports
             .import_graph
-            .depth_first_visit(&definition.name, |module_name, imports| {
-                let result = self
-                    .compile_to_naga_ir(
-                        &processed_ast[module_name],
-                        &module_name,
-                        &processed_sources[module_name].imports,
-                        &compiled,
-                        &definition.alias_to_path,
-                    )
-                    .unwrap();
-                compiled.insert(module_name.to_owned(), result);
-            });
-
-        let main_module = self.compile_to_naga_ir(
-            &processed_ast[&definition.name],
-            &definition.name,
-            &processed_sources[&definition.name].imports,
-            &compiled,
-            &definition.alias_to_path,
-        )?;
-        compiled.insert(main_module.name.clone(), main_module);
+            .depth_first_order(&entry_point_name);
+        for module_name in module_order.iter() {
+            let result = self
+                .compile_to_naga_ir(
+                    &processed_ast[module_name],
+                    &module_name,
+                    &processed_sources[module_name].imports,
+                    &compiled,
+                    &Default::default(),
+                )
+                .unwrap();
+            compiled.insert(module_name.to_owned(), result);
+        }
 
         // Now I have a ton of modules with properly mangled names, and header fragments.
         // Then I need to iterate over them in the import graph order, and copy everything to the final module.
+        // We also attempt to preserve the order of the modules in the final module.
 
-        // TODO: This is one approach for copying the modules in a way that preserves the original ordering.
-        // *But*, does naga's WGSL emitter even remotely try to preserve the original ordering?
-        // final module
-        // names_in_final = HashMap<name, Item>
-        // for module in depth first order {
-        //     for item in module {
-        //         if item.name starts with module.name {
-        //
+        /*TODO:
+        let module_span_shifts = HashMap::with_capacity(reachable_modules.len());
+        module_imports
+            .import_graph
+            .depth_first_visit(&entry_point_name, |module_name| {
+                compiled.insert(module_name.to_owned(), result);
+            }); */
 
-        //             add to names_in_final
-        //         }
-        //     }
-        //}
-        // for module in depth first order {
-        //     for item in module {
-        //         if item.name starts with module.name {
-        //             iterate over item.name, and replace every named item with a names_in_final item.
-        //             replace the placeholder with the actual item.
-        //         }
-        //     }
-        //}
+        let mut naga_module = DerivedModule::default();
 
-        // While copying, the header items will be replaced with the actual items.
-        // And also pls set the spans correctly.
+        {
+            let mut final_structs: HashMap<&str, Handle<naga::Type>> = HashMap::default();
+            let mut final_constants: HashMap<&str, Handle<naga::Constant>> = HashMap::default();
+            let mut final_overrides: HashMap<&str, Handle<naga::Override>> = HashMap::default();
+            let mut final_global_variables: HashMap<&str, Handle<naga::GlobalVariable>> =
+                HashMap::default();
+            let mut final_functions: HashMap<&str, Handle<naga::Function>> = HashMap::default();
 
-        // And build the final thingy
-        let mut derived = DerivedModule::default();
+            for module_name in module_order.iter() {
+                let module = compiled.get(module_name).unwrap();
+                let mut module_edit = naga_module
+                    .set_shader_source(&module.module, 0) // TODO: Set span offset
+                    .with_cache(FinalModuleCache {
+                        module_name: module_name.clone(),
+                        module,
+                        structs: std::mem::take(&mut final_structs),
+                        constants: std::mem::take(&mut final_constants),
+                        overrides: std::mem::take(&mut final_overrides),
+                        global_variables: std::mem::take(&mut final_global_variables),
+                        functions: std::mem::take(&mut final_functions),
+                        cache: Default::default(),
+                    });
 
-        let mut already_added = Default::default();
-        for import in &composable.imports {
-            self.add_import(
-                &mut derived,
-                import,
-                &shader_defs,
-                false,
-                &mut already_added,
-            );
+                for (handle, _) in module.module.types.iter() {
+                    module_edit.import_type(&handle);
+                }
+                for (handle, _) in module.module.constants.iter() {
+                    module_edit.import_const(&handle);
+                }
+                for (handle, _) in module.module.overrides.iter() {
+                    module_edit.import_pipeline_override(&handle);
+                }
+                for (handle, _) in module.module.global_variables.iter() {
+                    module_edit.import_global(&handle);
+                }
+                for (_, function) in module.module.functions.iter() {
+                    module_edit.import_function(&function, Default::default()); // TODO: Set span
+                }
+
+                final_structs = std::mem::take(&mut module_edit.cache.structs);
+                final_constants = std::mem::take(&mut module_edit.cache.constants);
+                final_overrides = std::mem::take(&mut module_edit.cache.overrides);
+                final_global_variables = std::mem::take(&mut module_edit.cache.global_variables);
+                final_functions = std::mem::take(&mut module_edit.cache.functions);
+            }
         }
 
-        Self::add_composable_data(&mut derived, &composable, None, 0, false);
-
-        let stage = match desc.shader_type {
-            #[cfg(feature = "glsl")]
-            ShaderType::GlslVertex => Some(naga::ShaderStage::Vertex),
-            #[cfg(feature = "glsl")]
-            ShaderType::GlslFragment => Some(naga::ShaderStage::Fragment),
-            _ => None,
-        };
-
-        let mut entry_points = Vec::default();
-        derived.set_shader_source(&composable.module_ir, 0);
-        for ep in &composable.module_ir.entry_points {
-            let mapped_func = derived.localize_function(&ep.function);
-            entry_points.push(EntryPoint {
-                name: ep.name.clone(),
-                function: mapped_func,
-                stage: stage.unwrap_or(ep.stage),
-                early_depth_test: ep.early_depth_test,
-                workgroup_size: ep.workgroup_size,
-            });
-        }
-
-        let mut naga_module = naga::Module {
-            entry_points,
-            ..derived.into()
-        };
+        let naga_module = naga_module.into();
 
         // validation
         if self.validate {
@@ -437,6 +435,8 @@ impl Composer {
             match info {
                 Ok(_) => Ok(naga_module),
                 Err(e) => {
+                    panic!("Validation failed: {:?}", e);
+                    /* TODO: Error handling
                     let original_span = e.spans().last();
                     let err_source = match original_span.and_then(|(span, _)| span.to_range()) {
                         Some(rng) => {
@@ -475,12 +475,105 @@ impl Composer {
                     Err(ComposerError {
                         inner: ComposerErrorInner::ShaderValidationError(e),
                         source: err_source,
-                    })
+                    }) */
                 }
             }
         } else {
             Ok(naga_module)
         }
+    }
+}
+
+struct FinalModuleCache<'a> {
+    module_name: ModuleName,
+    module: &'a CompiledModule,
+    structs: HashMap<&'a str, Handle<naga::Type>>,
+    constants: HashMap<&'a str, Handle<naga::Constant>>,
+    overrides: HashMap<&'a str, Handle<naga::Override>>,
+    global_variables: HashMap<&'a str, Handle<naga::GlobalVariable>>,
+    functions: HashMap<&'a str, Handle<naga::Function>>,
+    cache: BasicGlobalCache,
+}
+
+impl<'a> FinalModuleCache<'a> {
+    fn is_header_part<T: NagaGlobalHandle>(&self, item: T) -> bool {
+        item.name(&self.module.module)
+            .map(|name| unmangle_ref(&name).0 != self.module_name.0)
+            .unwrap_or(false)
+    }
+
+    fn is_exported_item<T: NagaGlobalHandle>(&self, item: T) -> bool {
+        if let Some(name) = item.name(&self.module.module) {
+            if self.module.get_export(unmangle_ref(&name).1).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl<'a> GlobalCacher for FinalModuleCache<'a> {
+    fn get_type(&self, handle: Handle<naga::Type>) -> Option<Handle<naga::Type>> {
+        if self.is_header_part(handle) {
+            return Some(
+                *self
+                    .structs
+                    .get(handle.name(&self.module.module).unwrap())
+                    .expect("Imported item should have been added."),
+            );
+        }
+
+        self.cache.get_type(handle)
+    }
+
+    fn set_type(&mut self, handle: Handle<naga::Type>, new_handle: Handle<naga::Type>) {
+        if self.is_header_part(handle) {
+            return;
+        }
+        self.cache.set_type(handle, new_handle);
+        if self.is_exported_item(handle) {
+            self.structs
+                .insert(handle.name(&self.module.module).unwrap(), new_handle);
+        }
+    }
+
+    fn get_constant(&self, handle: Handle<naga::Constant>) -> Option<Handle<naga::Constant>> {
+        todo!()
+    }
+
+    fn set_constant(&mut self, handle: Handle<naga::Constant>, new_handle: Handle<naga::Constant>) {
+        todo!()
+    }
+
+    fn get_override(&self, handle: Handle<naga::Override>) -> Option<Handle<naga::Override>> {
+        todo!()
+    }
+
+    fn set_override(&mut self, handle: Handle<naga::Override>, new_handle: Handle<naga::Override>) {
+        todo!()
+    }
+
+    fn get_global_variable(
+        &self,
+        handle: Handle<naga::GlobalVariable>,
+    ) -> Option<Handle<naga::GlobalVariable>> {
+        todo!()
+    }
+
+    fn set_global_variable(
+        &mut self,
+        handle: Handle<naga::GlobalVariable>,
+        new_handle: Handle<naga::GlobalVariable>,
+    ) {
+        todo!()
+    }
+
+    fn get_function(&self, handle: &str) -> Option<Handle<naga::Function>> {
+        todo!()
+    }
+
+    fn set_function(&mut self, handle: &str, new_handle: Handle<naga::Function>) {
+        todo!()
     }
 }
 
