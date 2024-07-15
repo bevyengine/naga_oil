@@ -1,4 +1,9 @@
-use std::{borrow::Cow, collections::HashMap, ops::Range};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::{Display, Formatter},
+    ops::Range,
+};
 
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
@@ -8,8 +13,8 @@ use codespan_reporting::{
 use thiserror::Error;
 use tracing::trace;
 
-use super::{preprocess::PreprocessOutput, Composer, ShaderDefValue};
-use crate::{compose::SPAN_SHIFT, redirect::RedirectError};
+use super::{ Composer, ShaderDefValue};
+use crate::redirect::RedirectError;
 
 #[derive(Debug)]
 pub enum ErrSource {
@@ -28,15 +33,18 @@ pub enum ErrSource {
 impl ErrSource {
     pub fn path<'a>(&'a self, composer: &'a Composer) -> &'a String {
         match self {
-            ErrSource::Module { name, .. } => &composer.module_sets.get(name).unwrap().file_path,
+            ErrSource::Module { name, .. } =>&name, // TODO: &composer.module_sets.get(name).unwrap().file_path,
             ErrSource::Constructing { path, .. } => path,
         }
     }
 
     pub fn source<'a>(&'a self, composer: &'a Composer) -> Cow<'a, String> {
+        Cow::Owned(String::new())
+        // TODO:
+        /*
         match self {
             ErrSource::Module { name, defs, .. } => {
-                let raw_source = &composer.module_sets.get(name).unwrap().sanitized_source;
+                let raw_source = &composer.module_sets.get(name).unwrap().source;
                 let Ok(PreprocessOutput {
                     preprocessed_source: source,
                     ..
@@ -50,7 +58,7 @@ impl ErrSource {
                 Cow::Owned(source)
             }
             ErrSource::Constructing { source, .. } => Cow::Borrowed(source),
-        }
+        } */
     }
 
     pub fn offset(&self) -> usize {
@@ -78,7 +86,7 @@ pub enum ComposerErrorInner {
     WgslParseError(naga::front::wgsl::ParseError),
     #[cfg(feature = "glsl")]
     #[error("{0:?}")]
-    GlslParseError(naga::front::glsl::ParseError),
+    GlslParseError(naga::front::glsl::ParseErrors),
     #[error("naga_oil bug, please file a report: failed to convert imported module IR back into WGSL for use with WGSL shaders: {0}")]
     WgslBackError(naga::back::wgsl::Error),
     #[cfg(feature = "glsl")]
@@ -113,6 +121,8 @@ pub enum ComposerErrorInner {
     InconsistentShaderDefValue { def: String },
     #[error("Attempted to add a module with no #define_import_path")]
     NoModuleName,
+    #[error("Attempted to add a module with multiple #define_import_path {0}")]
+    MultipleModuleNames(StringWithCommas),
     #[error("source contains internal decoration string, results probably won't be what you expect. if you have a legitimate reason to do this please file a report")]
     DecorationInSource(Range<usize>),
     #[error("naga oil only supports glsl 440 and 450")]
@@ -135,6 +145,47 @@ pub enum ComposerErrorInner {
     },
     #[error("#define statements are only allowed at the start of the top-level shaders")]
     DefineInModule(usize),
+    #[error("failed to preprocess shader {0}")]
+    PreprocessorError(StringsWithNewlines),
+    #[error("module already exists, cannot overwrite {0}")]
+    ModuleAlreadyExists(String),
+}
+
+#[derive(Debug)]
+pub struct StringsWithNewlines(Vec<String>);
+impl Display for StringsWithNewlines {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (i, value) in self.0.iter().enumerate() {
+            if i != 0 {
+                write!(f, "\n")?;
+            }
+            write!(f, "{}", value)?;
+        }
+        Ok(())
+    }
+}
+impl From<Vec<String>> for StringsWithNewlines {
+    fn from(values: Vec<String>) -> Self {
+        Self(values)
+    }
+}
+#[derive(Debug)]
+pub struct StringWithCommas(Vec<String>);
+impl Display for StringWithCommas {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (i, value) in self.0.iter().enumerate() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", value)?;
+        }
+        Ok(())
+    }
+}
+impl From<Vec<String>> for StringWithCommas {
+    fn from(values: Vec<String>) -> Self {
+        Self(values)
+    }
 }
 
 struct ErrorSources<'a> {
@@ -164,7 +215,9 @@ impl<'a> Iterator for ErrorSources<'a> {
 impl ComposerError {
     /// format a Composer error
     pub fn emit_to_string(&self, composer: &Composer) -> String {
-        composer.undecorate(&self.emit_to_string_internal(composer))
+        // TODO: composer.undecorate(&self.emit_to_string_internal(composer))
+
+        self.emit_to_string_internal(composer)
     }
 
     fn emit_to_string_internal(&self, composer: &Composer) -> String {
@@ -176,8 +229,10 @@ impl ComposerError {
         trace!("source offset: {}", source_offset);
 
         let map_span = |rng: Range<usize>| -> Range<usize> {
+            rng
+            /*TODO: Remap range
             ((rng.start & ((1 << SPAN_SHIFT) - 1)).saturating_sub(source_offset))
-                ..((rng.end & ((1 << SPAN_SHIFT) - 1)).saturating_sub(source_offset))
+                ..((rng.end & ((1 << SPAN_SHIFT) - 1)).saturating_sub(source_offset)) */
         };
 
         let files = SimpleFile::new(path, source.as_str());
@@ -266,11 +321,22 @@ impl ComposerError {
                     "{path}: no #define_import_path declaration found in composable module"
                 );
             }
+            ComposerErrorInner::MultipleModuleNames(names) => 
+              return format!(
+                    "{path}: multiple #define_import_path declarations found in composable module: {names}"
+                )  
+            ,
             ComposerErrorInner::InvalidIdentifier { at, .. } => (
                 vec![Label::primary((), map_span(at.to_range().unwrap_or(0..0)))
                     .with_message(self.inner.to_string())],
                 vec![],
             ),
+            ComposerErrorInner::PreprocessorError(e) => {
+                return format!("{path}: preprocessor errors: {e}");
+            }
+            ComposerErrorInner::ModuleAlreadyExists(name) => {
+                return format!("{path}: module already exists, cannot overwrite {name}");
+            }
         };
 
         let diagnostic = Diagnostic::error()

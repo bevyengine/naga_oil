@@ -188,7 +188,7 @@ impl Redirector {
             .collect();
 
         let mut derived = DerivedModule::default();
-        derived.set_shader_source(&self.module, 0);
+        let mut edit_derived = derived.set_shader_source(&self.module, 0);
 
         while !requirements.is_empty() {
             let start_len = requirements.len();
@@ -200,7 +200,7 @@ impl Redirector {
                 if reqs.is_empty() {
                     let func = self.module.functions.try_get(*h_f).unwrap();
                     let span = self.module.functions.get_span(*h_f);
-                    derived.import_function(func, span);
+                    edit_derived.import_function(func, span);
                     added.insert(*h_f);
                     false
                 } else {
@@ -221,7 +221,9 @@ impl Redirector {
             }
         }
 
-        Ok(derived.into_module_with_entrypoints())
+        edit_derived.import_entrypoints();
+
+        Ok(derived.into())
     }
 }
 
