@@ -40,9 +40,7 @@ impl ErrSource {
                 let Ok(PreprocessOutput {
                     preprocessed_source: source,
                     ..
-                }) = composer
-                    .preprocessor
-                    .preprocess(raw_source, defs, composer.validate)
+                }) = composer.preprocessor.preprocess(raw_source, defs)
                 else {
                     return Default::default();
                 };
