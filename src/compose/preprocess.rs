@@ -241,7 +241,7 @@ impl Preprocessor {
         let mut final_string = String::new();
         let mut offset = 0;
 
-        #[cfg(debug)]
+        #[cfg(debug_assertions)]
         let len = shader_str.len();
 
         // this code broadly stolen from bevy_render::ShaderProcessor
@@ -371,12 +371,12 @@ impl Preprocessor {
 
         scope.finish(offset)?;
 
-        #[cfg(debug)]
+        #[cfg(debug_assertions)]
         if validate_len {
             let revised_len = final_string.len();
-            assert_eq!(len, revised_len);
+            debug_assert_eq!(len, revised_len);
         }
-        #[cfg(not(debug))]
+        #[cfg(not(debug_assertions))]
         let _ = validate_len;
 
         Ok(PreprocessOutput {
