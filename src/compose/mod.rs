@@ -79,6 +79,7 @@ use indexmap::IndexMap;
 /// - a module `a` containing a function `f`,
 /// - a module `b` that imports `a`, and containing an `override a::f` function,
 /// - a module `c` that imports `a` and `b`, and containing an `override a::f` function,
+///
 /// then b and c both specify an override for `a::f`.
 /// the `override fn a::f` declared in module `b` may call to `a::f` within its body.
 /// the `override fn a::f` declared in module 'c' may call to `a::f` within its body, but the call will be redirected to `b::f`.
