@@ -40,9 +40,7 @@ impl ErrSource {
                 let Ok(PreprocessOutput {
                     preprocessed_source: source,
                     ..
-                }) = composer
-                    .preprocessor
-                    .preprocess(raw_source, defs, composer.validate)
+                }) = composer.preprocessor.preprocess(raw_source, defs)
                 else {
                     return Default::default();
                 };
@@ -78,7 +76,7 @@ pub enum ComposerErrorInner {
     WgslParseError(naga::front::wgsl::ParseError),
     #[cfg(feature = "glsl")]
     #[error("{0:?}")]
-    GlslParseError(Vec<naga::front::glsl::Error>),
+    GlslParseError(naga::front::glsl::ParseErrors),
     #[error("naga_oil bug, please file a report: failed to convert imported module IR back into WGSL for use with WGSL shaders: {0}")]
     WgslBackError(naga::back::wgsl::Error),
     #[cfg(feature = "glsl")]
@@ -197,7 +195,7 @@ impl ComposerError {
                     .map(|(span, desc)| {
                         trace!(
                             "mapping span {:?} -> {:?}",
-                            span.to_range().unwrap(),
+                            span.to_range().unwrap_or(0..0),
                             map_span(span.to_range().unwrap_or(0..0))
                         );
                         Label::primary((), map_span(span.to_range().unwrap_or(0..0)))
@@ -219,14 +217,16 @@ impl ComposerError {
             ComposerErrorInner::WgslParseError(e) => (
                 e.labels()
                     .map(|(range, msg)| {
-                        Label::primary((), map_span(range.to_range().unwrap())).with_message(msg)
+                        Label::primary((), map_span(range.to_range().unwrap_or(0..0)))
+                            .with_message(msg)
                     })
                     .collect(),
                 vec![e.message().to_owned()],
             ),
             #[cfg(feature = "glsl")]
             ComposerErrorInner::GlslParseError(e) => (
-                e.iter()
+                e.errors
+                    .iter()
                     .map(|naga::front::glsl::Error { kind, meta }| {
                         Label::primary((), map_span(meta.to_range().unwrap_or(0..0)))
                             .with_message(kind.to_string())
