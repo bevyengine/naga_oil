@@ -48,9 +48,13 @@ impl Default for Preprocessor {
 
 #[derive(Debug)]
 pub struct PreprocessorMetaData {
+    /// Name of the module (#define_import_path)
     pub name: Option<String>,
+    /// The imports that were actually used (analyzes the source code during preprocesisng)
     pub imports: Vec<ImportDefWithOffset>,
+    /// #define values in the module
     pub defines: HashMap<String, ShaderDefValue>,
+    /// Defines that are referenced in the module. Either with #{name} or a variation of #ifdef name
     pub effective_defs: HashSet<String>,
 }
 
