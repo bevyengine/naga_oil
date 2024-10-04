@@ -225,10 +225,11 @@ impl Preprocessor {
         Ok((false, None))
     }
 
-    // process #if[(n)?def]? / #else / #endif preprocessor directives,
-    // strip module name and imports
-    // also strip "#version xxx"
-    // replace items with resolved decorated names
+    /// - strip comments
+    /// - Process `#if[(n)?def]?` / `#else` / `#endif` preprocessor directives
+    /// - strip module name and imports
+    /// - strip `#version xxx`
+    /// - replace items with resolved decorated names
     pub fn preprocess(
         &self,
         shader_str: &str,
@@ -242,7 +243,9 @@ impl Preprocessor {
 
         // this code broadly stolen from bevy_render::ShaderProcessor
         let mut lines = shader_str.lines();
-        let mut lines = lines.replace_comments().zip(shader_str.lines()).peekable();
+        let mut lines = lines //.replace_comments()
+            .zip(shader_str.lines())
+            .peekable();
 
         while let Some((mut line, original_line)) = lines.next() {
             let mut output = false;

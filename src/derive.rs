@@ -1,8 +1,9 @@
 use indexmap::IndexMap;
 use naga::{
-    Arena, AtomicFunction, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
-    FunctionResult, GatherMode, GlobalVariable, Handle, ImageQuery, LocalVariable, Module,
-    Override, SampleLevel, Span, Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
+    Arena, AtomicFunction, Block, Comments, Constant, EntryPoint, Expression, Function,
+    FunctionArgument, FunctionResult, GatherMode, GlobalVariable, Handle, ImageQuery,
+    LocalVariable, Module, Override, SampleLevel, Span, Statement, StructMember, SwitchCase, Type,
+    TypeInner, UniqueArena,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -30,6 +31,7 @@ pub struct DerivedModule<'a> {
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
     pipeline_overrides: Arena<Override>,
+    comments: Comments,
 }
 
 impl<'a> DerivedModule<'a> {
@@ -807,6 +809,16 @@ impl<'a> DerivedModule<'a> {
         self.import_function(func, span)
     }
 
+    pub(crate) fn import_comments(&mut self, comments: &Comments) {
+        // Deconstructing to not miss a new property to map if we add more.
+        let Comments { types } = comments;
+        for comment in types.iter() {
+            self.comments
+                .types
+                .insert(*self.type_map.get(comment.0).unwrap(), comment.1.clone());
+        }
+    }
+
     pub fn into_module_with_entrypoints(mut self) -> naga::Module {
         let entry_points = self
             .shader
@@ -842,6 +854,7 @@ impl<'a> From<DerivedModule<'a>> for naga::Module {
             special_types: Default::default(),
             entry_points: Default::default(),
             overrides: derived.pipeline_overrides,
+            comments: derived.comments,
         }
     }
 }
