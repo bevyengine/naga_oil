@@ -243,9 +243,7 @@ impl Preprocessor {
 
         // this code broadly stolen from bevy_render::ShaderProcessor
         let mut lines = shader_str.lines();
-        let mut lines = lines //.replace_comments()
-            .zip(shader_str.lines())
-            .peekable();
+        let mut lines = lines.replace_comments().zip(shader_str.lines()).peekable();
 
         while let Some((mut line, original_line)) = lines.next() {
             let mut output = false;

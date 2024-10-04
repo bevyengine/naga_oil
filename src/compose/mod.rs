@@ -306,7 +306,7 @@ pub struct ImportDefinition {
 
 #[derive(Debug, Clone)]
 pub struct ImportDefWithOffset {
-    definition: ImportDefinition,
+    pub definition: ImportDefinition,
     offset: usize,
 }
 
