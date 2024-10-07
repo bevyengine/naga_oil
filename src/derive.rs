@@ -811,11 +811,39 @@ impl<'a> DerivedModule<'a> {
 
     pub(crate) fn import_comments(&mut self, comments: &Comments) {
         // Deconstructing to not miss a new property to map if we add more.
-        let Comments { types } = comments;
+        let Comments {
+            types,
+            functions,
+            constants,
+            global_variables,
+            struct_members,
+        } = comments;
         for comment in types.iter() {
             self.comments
                 .types
                 .insert(*self.type_map.get(comment.0).unwrap(), comment.1.clone());
+        }
+        for ((struct_handle, index), comment) in struct_members.iter() {
+            self.comments.struct_members.insert(
+                (*self.type_map.get(struct_handle).unwrap(), *index),
+                comment.clone(),
+            );
+        }
+        for function in functions.iter() {
+            self.comments
+                .functions
+                .insert(function.0.to_string(), function.1.clone());
+        }
+        for constant in constants.iter() {
+            self.comments
+                .constants
+                .insert(*self.const_map.get(constant.0).unwrap(), constant.1.clone());
+        }
+        for global_variable in global_variables.iter() {
+            self.comments.global_variables.insert(
+                *self.global_map.get(global_variable.0).unwrap(),
+                global_variable.1.clone(),
+            );
         }
     }
 
