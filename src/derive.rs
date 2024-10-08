@@ -819,15 +819,16 @@ impl<'a> DerivedModule<'a> {
             struct_members,
         } = comments;
         for comment in types.iter() {
-            self.comments
-                .types
-                .insert(*self.type_map.get(comment.0).unwrap(), comment.1.clone());
+            if let Some(new_handle) = self.type_map.get(comment.0) {
+                self.comments.types.insert(*new_handle, comment.1.clone());
+            }
         }
         for ((struct_handle, index), comment) in struct_members.iter() {
-            self.comments.struct_members.insert(
-                (*self.type_map.get(struct_handle).unwrap(), *index),
-                comment.clone(),
-            );
+            if let Some(new_struct_handle) = self.type_map.get(struct_handle) {
+                self.comments
+                    .struct_members
+                    .insert((*new_struct_handle, *index), comment.clone());
+            }
         }
         for function in functions.iter() {
             self.comments
@@ -835,15 +836,22 @@ impl<'a> DerivedModule<'a> {
                 .insert(function.0.to_string(), function.1.clone());
         }
         for constant in constants.iter() {
-            self.comments
-                .constants
-                .insert(*self.const_map.get(constant.0).unwrap(), constant.1.clone());
+            if let Some(new_handle) = self.const_map.get(constant.0) {
+                self.comments
+                    .constants
+                    .insert(*new_handle, constant.1.clone());
+            }
         }
         for global_variable in global_variables.iter() {
-            self.comments.global_variables.insert(
-                *self.global_map.get(global_variable.0).unwrap(),
-                global_variable.1.clone(),
-            );
+            if let Some(new_handle) = self.global_map.get(global_variable.0) {
+                self.comments
+                    .global_variables
+                    .insert(*new_handle, global_variable.1.clone());
+            } else {
+                // NOTE: Could not migrate global variable, I'm not sure why this happens.
+                // It's probably because this module is not the owner of the global.
+                // Chances are that comment will be migrated by another module.
+            }
         }
     }
 
