@@ -817,7 +817,9 @@ impl<'a> DerivedModule<'a> {
             constants,
             global_variables,
             struct_members,
+            module,
         } = comments;
+        self.comments.module = module.clone();
         for comment in types.iter() {
             if let Some(new_handle) = self.type_map.get(comment.0) {
                 self.comments.types.insert(*new_handle, comment.1.clone());

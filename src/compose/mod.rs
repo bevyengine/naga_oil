@@ -690,7 +690,6 @@ impl Composer {
                     }
                 })?,
         };
-
         Ok(IrBuildResult {
             module,
             start_offset,
@@ -964,7 +963,6 @@ impl Composer {
             module_definition.name,
             source.len()
         );
-
         let IrBuildResult {
             module: mut source_ir,
             start_offset,
@@ -1164,7 +1162,6 @@ impl Composer {
         }
         // Copy comments, should be done after each commented item has been imported.
         module_builder.import_comments(&source_ir.comments);
-
         let module_ir = module_builder.into_module_with_entrypoints();
         let mut header_ir: naga::Module = header_builder.into();
 
