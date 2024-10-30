@@ -362,7 +362,7 @@ impl Default for Composer {
             )
             .unwrap(),
             virtual_fn_regex: Regex::new(
-                r"(?P<lead>[\s]*virtual\s+fn\s+)(?P<function>[^\s]+)(?P<trail>\s*)\(",
+                r"(?P<lead>[\s]*)(?P<virtual_keyword>virtual\s+)(?<fn_keyword>fn\s+)(?P<function_name>[^\s]+)(?P<trail>\s*)\(",
             )
             .unwrap(),
             override_fn_regex: Regex::new(
@@ -858,17 +858,13 @@ impl Composer {
         let source = self
             .virtual_fn_regex
             .replace_all(source, |cap: &regex::Captures| {
-                let target_function = cap.get(2).unwrap().as_str().to_owned();
+                let function_name = cap.name("function_name").unwrap().as_str();
+                let lead = cap.name("lead").unwrap().as_str();
+                let trail = cap.name("trail").unwrap().as_str();
+                let fn_keyword = cap.name("fn_keyword").unwrap().as_str();
 
-                let replacement_str = format!(
-                    "{}fn {}{}(",
-                    " ".repeat(cap.get(1).unwrap().range().len() - 3),
-                    target_function,
-                    " ".repeat(cap.get(3).unwrap().range().len()),
-                );
-
-                virtual_functions.insert(target_function);
-
+                let replacement_str = format!("{lead}{fn_keyword}{function_name}{trail}(");
+                virtual_functions.insert(function_name.to_string());
                 replacement_str
             });
 
