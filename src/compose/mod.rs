@@ -1324,7 +1324,7 @@ impl Composer {
             imports,
         } = self
             .preprocessor
-            .preprocess(&module_set.sanitized_source, shader_defs, self.validate)
+            .preprocess(&module_set.sanitized_source, shader_defs)
             .map_err(|inner| {
                 EnsureImportsError::from(ComposerError {
                     inner,
@@ -1636,12 +1636,9 @@ impl Composer {
 
         let name = name.unwrap_or_default();
 
-        let PreprocessOutput {
-            preprocessed_source,
-            imports,
-        } = self
+        let PreprocessOutput { imports, .. } = self
             .preprocessor
-            .preprocess(&sanitized_source, &shader_defs, self.validate)
+            .preprocess(&sanitized_source, &shader_defs)
             .map_err(|inner| ComposerError {
                 inner,
                 source: ErrSource::Constructing {
