@@ -450,7 +450,7 @@ impl FunctionReq {
                     pointer: expr_map[pointer],
                     fun: *fun,
                     value: expr_map[value],
-                    result: expr_map[result],
+                    result: result.as_ref().map(|it| expr_map[it]),
                 })
             }
             (
@@ -1568,12 +1568,15 @@ impl<'a> Pruner<'a> {
                 let required_store = self.store_required(context, &var_ref);
                 debug!("atomic store required: {:?}", required_store);
 
-                let required_load = func_req.exprs_required.get(result).cloned();
+                let required_load = match result {
+                    Some(result) => func_req.exprs_required.get(result).cloned(),
+                    None => None,
+                };
                 debug!("atomic load required: {:?}", required_load);
 
                 if required_load.is_some() || required_store.is_some() {
                     // just pass it all through i guess ..?
-                    if let Some(required_load) = required_load {
+                    if let (Some(required_load), Some(result)) = (required_load, result) {
                         self.add_expression(function, func_req, context, *result, &required_load);
                     }
                     if let Some(required_store) = required_store {
