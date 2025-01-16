@@ -521,6 +521,7 @@ impl Composer {
                     expressions: Default::default(),
                     named_expressions: Default::default(),
                     body: Default::default(),
+                    diagnostic_filter_leaf: Default::default(),
                 };
                 let ep = EntryPoint {
                     name: dummy_entry_point.clone(),
@@ -528,6 +529,7 @@ impl Composer {
                     function: func,
                     early_depth_test: None,
                     workgroup_size: [0, 0, 0],
+                    workgroup_size_overrides: None,
                 };
 
                 naga_module.entry_points.push(ep);
@@ -1043,6 +1045,7 @@ impl Composer {
                         expressions: Default::default(),
                         named_expressions: Default::default(),
                         body: Default::default(),
+                        diagnostic_filter_leaf: todo!(),
                     };
 
                     // record owned function
@@ -1080,6 +1083,7 @@ impl Composer {
                     expressions: Default::default(),
                     named_expressions: Default::default(),
                     body: Default::default(),
+                    diagnostic_filter_leaf: todo!(),
                 };
 
                 owned_functions.insert(ep.function.name.clone().unwrap(), (None, header_function));
@@ -1784,6 +1788,7 @@ impl Composer {
                 stage: stage.unwrap_or(ep.stage),
                 early_depth_test: ep.early_depth_test,
                 workgroup_size: ep.workgroup_size,
+                workgroup_size_overrides: ep.workgroup_size_overrides,
             });
         }
 

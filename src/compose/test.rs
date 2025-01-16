@@ -1354,7 +1354,7 @@ mod test {
             })
             .unwrap();
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = instance
             .enumerate_adapters(wgpu::Backends::all())
             .into_iter()

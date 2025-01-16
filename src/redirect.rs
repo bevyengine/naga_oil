@@ -71,7 +71,8 @@ impl Redirector {
                 | Statement::RayQuery { .. }
                 | Statement::SubgroupBallot { .. }
                 | Statement::SubgroupGather { .. }
-                | Statement::SubgroupCollectiveOperation { .. } => (),
+                | Statement::SubgroupCollectiveOperation { .. }
+                | Statement::ImageAtomic { .. } => (),
             }
         }
     }
