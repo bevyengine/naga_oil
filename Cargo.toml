@@ -34,3 +34,7 @@ indexmap = "2"
 wgpu = { version = "23", features = ["naga-ir"] }
 futures-lite = "1"
 tracing-subscriber = { version = "0.3", features = ["std", "fmt"] }
+
+[patch.crates-io]
+# naga = { path = "../wgpu/naga" }
+naga = { git = "https://github.com/Vrixyz/wgpu.git", branch = "token-comment" }

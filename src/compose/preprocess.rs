@@ -225,10 +225,11 @@ impl Preprocessor {
         Ok((false, None))
     }
 
-    // process #if[(n)?def]? / #else / #endif preprocessor directives,
-    // strip module name and imports
-    // also strip "#version xxx"
-    // replace items with resolved decorated names
+    /// - strip comments
+    /// - Process `#if[(n)?def]?` / `#else` / `#endif` preprocessor directives
+    /// - strip module name and imports
+    /// - strip `#version xxx`
+    /// - replace items with resolved decorated names
     pub fn preprocess(
         &self,
         shader_str: &str,

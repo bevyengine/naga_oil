@@ -306,7 +306,7 @@ pub struct ImportDefinition {
 
 #[derive(Debug, Clone)]
 pub struct ImportDefWithOffset {
-    definition: ImportDefinition,
+    pub definition: ImportDefinition,
     offset: usize,
 }
 
@@ -570,7 +570,9 @@ impl Composer {
         }
     }
 
-    // build naga module for a given shader_def configuration. builds a minimal self-contained module built against headers for imports
+    /// Build naga module for a given shader_def configuration.
+    ///
+    /// Builds a minimal self-contained module built against headers for imports.
     fn create_module_ir(
         &self,
         name: &str,
@@ -688,7 +690,6 @@ impl Composer {
                     }
                 })?,
         };
-
         Ok(IrBuildResult {
             module,
             start_offset,
@@ -962,7 +963,6 @@ impl Composer {
             module_definition.name,
             source.len()
         );
-
         let IrBuildResult {
             module: mut source_ir,
             start_offset,
@@ -1160,7 +1160,8 @@ impl Composer {
                 // todo figure out how to get span info for entrypoints
             }
         }
-
+        // Copy comments, should be done after each commented item has been imported.
+        module_builder.import_comments(&source_ir.comments);
         let module_ir = module_builder.into_module_with_entrypoints();
         let mut header_ir: naga::Module = header_builder.into();
 
@@ -1280,6 +1281,8 @@ impl Composer {
                 }
             }
         }
+
+        derived.import_comments(&composable.module_ir.comments);
 
         derived.clear_shader_source();
     }
@@ -1883,6 +1886,8 @@ static PREPROCESSOR: once_cell::sync::Lazy<Preprocessor> =
     once_cell::sync::Lazy::new(Preprocessor::default);
 
 /// Get module name and all required imports (ignoring shader_defs) from a shader string
+///
+/// Returns nothing in case of error. The actual error will be displayed when the caller attempts to use the shader.
 pub fn get_preprocessor_data(
     source: &str,
 ) -> (
@@ -1895,7 +1900,7 @@ pub fn get_preprocessor_data(
         imports,
         defines,
         ..
-    }) = PREPROCESSOR.get_preprocessor_metadata(source, true)
+    }) = try_get_preprocessor_data(source)
     {
         (
             name,
@@ -1909,4 +1914,9 @@ pub fn get_preprocessor_data(
         // if errors occur we return nothing; the actual error will be displayed when the caller attempts to use the shader
         Default::default()
     }
+}
+
+/// Get module name and all required imports (ignoring shader_defs) from a shader string
+pub fn try_get_preprocessor_data(source: &str) -> Result<PreprocessorMetaData, ComposerErrorInner> {
+    PREPROCESSOR.get_preprocessor_metadata(source, true)
 }

@@ -1,8 +1,9 @@
 use indexmap::IndexMap;
 use naga::{
-    Arena, AtomicFunction, Block, Constant, EntryPoint, Expression, Function, FunctionArgument,
-    FunctionResult, GatherMode, GlobalVariable, Handle, ImageQuery, LocalVariable, Module,
-    Override, SampleLevel, Span, Statement, StructMember, SwitchCase, Type, TypeInner, UniqueArena,
+    Arena, AtomicFunction, Block, Comments, Constant, EntryPoint, Expression, Function,
+    FunctionArgument, FunctionResult, GatherMode, GlobalVariable, Handle, ImageQuery,
+    LocalVariable, Module, Override, SampleLevel, Span, Statement, StructMember, SwitchCase, Type,
+    TypeInner, UniqueArena,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -30,6 +31,7 @@ pub struct DerivedModule<'a> {
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
     pipeline_overrides: Arena<Override>,
+    comments: Comments,
 }
 
 impl<'a> DerivedModule<'a> {
@@ -807,6 +809,54 @@ impl<'a> DerivedModule<'a> {
         self.import_function(func, span)
     }
 
+    pub(crate) fn import_comments(&mut self, comments: &Comments) {
+        // Deconstructing to not miss a new property to map if we add more.
+        let Comments {
+            types,
+            functions,
+            constants,
+            global_variables,
+            struct_members,
+            module,
+        } = comments;
+        self.comments.module = module.clone();
+        for comment in types.iter() {
+            if let Some(new_handle) = self.type_map.get(comment.0) {
+                self.comments.types.insert(*new_handle, comment.1.clone());
+            }
+        }
+        for ((struct_handle, index), comment) in struct_members.iter() {
+            if let Some(new_struct_handle) = self.type_map.get(struct_handle) {
+                self.comments
+                    .struct_members
+                    .insert((*new_struct_handle, *index), comment.clone());
+            }
+        }
+        for function in functions.iter() {
+            self.comments
+                .functions
+                .insert(function.0.to_string(), function.1.clone());
+        }
+        for constant in constants.iter() {
+            if let Some(new_handle) = self.const_map.get(constant.0) {
+                self.comments
+                    .constants
+                    .insert(*new_handle, constant.1.clone());
+            }
+        }
+        for global_variable in global_variables.iter() {
+            if let Some(new_handle) = self.global_map.get(global_variable.0) {
+                self.comments
+                    .global_variables
+                    .insert(*new_handle, global_variable.1.clone());
+            } else {
+                // NOTE: Could not migrate global variable, I'm not sure why this happens.
+                // It's probably because this module is not the owner of the global.
+                // Chances are that comment will be migrated by another module.
+            }
+        }
+    }
+
     pub fn into_module_with_entrypoints(mut self) -> naga::Module {
         let entry_points = self
             .shader
@@ -842,6 +892,7 @@ impl From<DerivedModule<'_>> for naga::Module {
             special_types: Default::default(),
             entry_points: Default::default(),
             overrides: derived.pipeline_overrides,
+            comments: derived.comments,
         }
     }
 }
