@@ -1263,6 +1263,46 @@ mod test {
         output_eq!(wgsl, "tests/expected/atomics.txt");
     }
 
+    #[test]
+    fn test_diagnostic_filters() {
+        let mut composer = Composer::default();
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/diagnostic_filters/filters.wgsl"),
+                file_path: "tests/diagnostic_filters/filters.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        // TODO enable this test when HLSL support is available
+        if cfg!(feature = "test_shader") && false {
+            assert_eq!(test_shader(&mut composer), 28.0);
+        }
+
+        let module = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/diagnostic_filters/top.wgsl"),
+                file_path: "tests/diagnostic_filters/top.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let info = composer.create_validator().validate(&module).unwrap();
+        let wgsl = naga::back::wgsl::write_string(
+            &module,
+            &info,
+            naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+        )
+        .unwrap();
+
+        // let mut f = std::fs::File::create("atomics.txt").unwrap();
+        // f.write_all(wgsl.as_bytes()).unwrap();
+        // drop(f);
+
+        output_eq!(wgsl, "tests/expected/diagnostic_filters.txt");
+    }
+
     #[cfg(feature = "test_shader")]
     #[test]
     fn effective_defs() {

@@ -1,0 +1,20 @@
+@group(0) @binding(0) var s : sampler;
+@group(0) @binding(2) var tex : texture_2d<f32>;
+@group(1) @binding(0) var<storage, read> ro_buffer : array<f32, 4>;
+
+@fragment
+fn main(@builtin(position) p : vec4f) -> @location(0) vec4f {
+    return filters::diagnostic_test();
+}
+
+diagnostic(warning, derivative_uniformity);
+
+fn diagnostic_test() -> vec4f {
+    diagnostic(off, derivative_uniformity);
+    if ro_buffer[0] == 0 {
+        // Emits a derivative uniformity error during validation.
+        return textureSample(tex, s, vec2(0.,0.));
+    }
+
+      return vec4f(0.);
+}
