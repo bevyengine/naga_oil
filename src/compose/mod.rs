@@ -1045,7 +1045,7 @@ impl Composer {
                         expressions: Default::default(),
                         named_expressions: Default::default(),
                         body: Default::default(),
-                        diagnostic_filter_leaf: todo!(),
+                        diagnostic_filter_leaf: None,
                     };
 
                     // record owned function
@@ -1083,7 +1083,7 @@ impl Composer {
                     expressions: Default::default(),
                     named_expressions: Default::default(),
                     body: Default::default(),
-                    diagnostic_filter_leaf: todo!(),
+                    diagnostic_filter_leaf: None,
                 };
 
                 owned_functions.insert(ep.function.name.clone().unwrap(), (None, header_function));

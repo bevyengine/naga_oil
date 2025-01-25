@@ -792,7 +792,7 @@ impl<'a> DerivedModule<'a> {
             expressions: Rc::try_unwrap(expressions).unwrap().into_inner(),
             named_expressions,
             body,
-            diagnostic_filter_leaf: todo!(),
+            diagnostic_filter_leaf: None,
         }
     }
 
@@ -867,8 +867,8 @@ impl From<DerivedModule<'_>> for naga::Module {
             special_types: Default::default(),
             entry_points: Default::default(),
             overrides: derived.pipeline_overrides,
-            diagnostic_filters: todo!(),
-            diagnostic_filter_leaf: todo!(),
+            diagnostic_filters: Default::default(),
+            diagnostic_filter_leaf: None,
         }
     }
 }

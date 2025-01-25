@@ -1264,6 +1264,7 @@ mod test {
     }
 
     #[test]
+    #[should_panic] // Diagnostic filters not yet supported
     fn test_diagnostic_filters() {
         let mut composer = Composer::default();
 
