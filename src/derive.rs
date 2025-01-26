@@ -443,6 +443,29 @@ impl<'a> DerivedModule<'a> {
                         argument: map_expr!(argument),
                         result: map_expr!(result),
                     },
+                    Statement::ImageAtomic {
+                        image,
+                        coordinate,
+                        array_index,
+                        fun,
+                        value,
+                    } => {
+                        let fun = match fun {
+                            AtomicFunction::Exchange {
+                                compare: Some(compare_expr),
+                            } => AtomicFunction::Exchange {
+                                compare: Some(map_expr!(compare_expr)),
+                            },
+                            fun => *fun,
+                        };
+                        Statement::ImageAtomic {
+                            image: map_expr!(image),
+                            coordinate: map_expr!(coordinate),
+                            array_index: map_expr_opt!(array_index),
+                            fun,
+                            value: map_expr!(value),
+                        }
+                    }
                     // else just copy
                     Statement::Break
                     | Statement::Continue
@@ -769,6 +792,7 @@ impl<'a> DerivedModule<'a> {
             expressions: Rc::try_unwrap(expressions).unwrap().into_inner(),
             named_expressions,
             body,
+            diagnostic_filter_leaf: None,
         }
     }
 
@@ -819,6 +843,7 @@ impl<'a> DerivedModule<'a> {
                 early_depth_test: ep.early_depth_test,
                 workgroup_size: ep.workgroup_size,
                 function: self.localize_function(&ep.function),
+                workgroup_size_overrides: ep.workgroup_size_overrides,
             })
             .collect();
 
@@ -842,6 +867,8 @@ impl From<DerivedModule<'_>> for naga::Module {
             special_types: Default::default(),
             entry_points: Default::default(),
             overrides: derived.pipeline_overrides,
+            diagnostic_filters: Default::default(),
+            diagnostic_filter_leaf: None,
         }
     }
 }
