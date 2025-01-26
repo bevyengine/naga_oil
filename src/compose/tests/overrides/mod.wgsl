@@ -1,5 +1,7 @@
 #define_import_path mod
 
+// This is a comment
+
 virtual fn inner(arg: f32) -> f32 {
     return arg * 2.0;
 }
