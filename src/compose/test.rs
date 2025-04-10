@@ -1401,14 +1401,12 @@ mod test {
             .into_iter()
             .next()
             .unwrap();
-        let (device, queue) = futures_lite::future::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
+        let (device, queue) =
+            futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 required_features: Features::MAPPABLE_PRIMARY_BUFFERS,
                 ..Default::default()
-            },
-            None,
-        ))
-        .unwrap();
+            }))
+            .unwrap();
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
@@ -1477,7 +1475,11 @@ mod test {
 
         queue.submit([buffer]);
 
-        while !device.poll(wgpu::MaintainBase::Wait).is_queue_empty() {
+        while !device
+            .poll(wgpu::MaintainBase::Wait)
+            .unwrap()
+            .is_queue_empty()
+        {
             println!("waiting...");
         }
 
@@ -1485,7 +1487,11 @@ mod test {
             .slice(..)
             .map_async(wgpu::MapMode::Read, |_| ());
 
-        while !device.poll(wgpu::MaintainBase::Wait).is_queue_empty() {
+        while !device
+            .poll(wgpu::MaintainBase::Wait)
+            .unwrap()
+            .is_queue_empty()
+        {
             println!("waiting...");
         }
 
