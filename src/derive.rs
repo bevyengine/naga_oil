@@ -172,7 +172,7 @@ impl<'a> DerivedModule<'a> {
             let new_global = GlobalVariable {
                 name: gv.name.clone(),
                 space: gv.space,
-                binding: gv.binding.clone(),
+                binding: gv.binding,
                 ty: self.import_type(&gv.ty),
                 init: gv.init.map(|c| self.import_global_expression(c)),
             };
