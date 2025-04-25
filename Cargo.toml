@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "a crate for combining and manipulating shaders using naga IR"
 repository = "https://github.com/bevyengine/naga_oil/"
 readme = "README.md"
-rust-version = "1.82"
+rust-version = "1.84"
 
 [features]
 default = ["test_shader", "glsl"]
@@ -23,7 +23,7 @@ tracing = "0.1"
 regex = "1.8"
 regex-syntax = "0.8"
 thiserror = "2.0"
-codespan-reporting = "0.11"
+codespan-reporting = "0.12"
 data-encoding = "2.3.2"
 bit-set = "0.8"
 rustc-hash = "1.1"
