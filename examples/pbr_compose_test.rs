@@ -145,11 +145,10 @@ fn test_wgsl_string_compile(n: usize) {
         .into_iter()
         .next()
         .unwrap();
-    let device = futures_lite::future::block_on(
-        adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
-    )
-    .unwrap()
-    .0;
+    let device =
+        futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .unwrap()
+            .0;
 
     for _ in 0..n {
         let _desc = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -169,11 +168,10 @@ fn test_composer_compile(n: usize, composer: &mut Composer) {
         .into_iter()
         .next()
         .unwrap();
-    let device = futures_lite::future::block_on(
-        adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
-    )
-    .unwrap()
-    .0;
+    let device =
+        futures_lite::future::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .unwrap()
+            .0;
 
     for _ in 0..n {
         let module = composer

@@ -51,7 +51,7 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
                 .unwrap_or(line_in.len());
 
             if let CommentState::Block(_) = self.state {
-                output.extend(std::iter::repeat(' ').take(section_end - section_start));
+                output.extend(std::iter::repeat_n(' ', section_end - section_start));
             } else {
                 output.push_str(&line_in[section_start..section_end]);
             }
@@ -62,10 +62,10 @@ impl<'a> Iterator for CommentReplaceIter<'a> {
                     match marker.as_str() {
                         // only possible in None state
                         "//" => {
-                            output.extend(
-                                std::iter::repeat(' ')
-                                    .take(line_in.len() - marker.start() - section_start),
-                            );
+                            output.extend(std::iter::repeat_n(
+                                ' ',
+                                line_in.len() - marker.start() - section_start,
+                            ));
                             return Some(Cow::Owned(output));
                         }
                         // only possible in None or Block state
