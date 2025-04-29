@@ -92,8 +92,8 @@ impl<'a> DerivedModule<'a> {
                     | TypeInner::Image { .. }
                     | TypeInner::Sampler { .. }
                     | TypeInner::Atomic { .. }
-                    | TypeInner::AccelerationStructure
-                    | TypeInner::RayQuery => ty.inner.clone(),
+                    | TypeInner::AccelerationStructure { .. }
+                    | TypeInner::RayQuery { .. } => ty.inner.clone(),
 
                     TypeInner::Pointer { base, space } => TypeInner::Pointer {
                         base: self.import_type(base),
@@ -172,7 +172,7 @@ impl<'a> DerivedModule<'a> {
             let new_global = GlobalVariable {
                 name: gv.name.clone(),
                 space: gv.space,
-                binding: gv.binding.clone(),
+                binding: gv.binding,
                 ty: self.import_type(&gv.ty),
                 init: gv.init.map(|c| self.import_global_expression(c)),
             };
@@ -407,6 +407,14 @@ impl<'a> DerivedModule<'a> {
                                 }
                             }
                             naga::RayQueryFunction::Terminate => naga::RayQueryFunction::Terminate,
+                            naga::RayQueryFunction::GenerateIntersection { hit_t } => {
+                                naga::RayQueryFunction::GenerateIntersection {
+                                    hit_t: map_expr!(hit_t),
+                                }
+                            }
+                            naga::RayQueryFunction::ConfirmIntersection => {
+                                naga::RayQueryFunction::ConfirmIntersection
+                            }
                         },
                     },
                     Statement::SubgroupBallot { result, predicate } => Statement::SubgroupBallot {
@@ -690,6 +698,12 @@ impl<'a> DerivedModule<'a> {
             Expression::RayQueryProceedResult => expr.clone(),
             Expression::RayQueryGetIntersection { query, committed } => {
                 Expression::RayQueryGetIntersection {
+                    query: map_expr!(query),
+                    committed: *committed,
+                }
+            }
+            Expression::RayQueryVertexPositions { query, committed } => {
+                Expression::RayQueryVertexPositions {
                     query: map_expr!(query),
                     committed: *committed,
                 }
