@@ -127,7 +127,7 @@ use indexmap::IndexMap;
 ///
 /// codespan reporting for errors is available using the error `emit_to_string` method. this requires validation to be enabled, which is true by default. `Composer::non_validating()` produces a non-validating composer that is not able to give accurate error reporting.
 ///
-use naga::EntryPoint;
+use naga::{valid::Capabilities, EntryPoint};
 use regex::Regex;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use tracing::{debug, trace};
@@ -1797,8 +1797,10 @@ impl Composer {
             ..derived.into()
         };
 
-        naga_module.generate_ray_desc_type();
-        naga_module.generate_ray_intersection_type();
+        if self.capabilities.contains(Capabilities::RAY_QUERY) {
+            naga_module.generate_ray_desc_type();
+            naga_module.generate_ray_intersection_type();
+        }
 
         // apply overrides
         if !composable.override_functions.is_empty() {
