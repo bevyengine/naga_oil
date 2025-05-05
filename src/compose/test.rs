@@ -1264,6 +1264,45 @@ mod test {
     }
 
     #[test]
+    fn test_raycasts() {
+        let mut composer =
+            Composer::default().with_capabilities(naga::valid::Capabilities::RAY_QUERY);
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/raycast/mod.wgsl"),
+                file_path: "tests/raycast/mod.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let _module = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/raycast/top.wgsl"),
+                file_path: "tests/raycast/top.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        // writeback doesn't work for raycast structures
+        // at least we can test that it compiles
+
+        // let info = composer.create_validator().validate(&module).unwrap();
+        // let wgsl = naga::back::wgsl::write_string(
+        //     &module,
+        //     &info,
+        //     naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+        // )
+        // .unwrap();
+
+        // let mut f = std::fs::File::create("raycast.txt").unwrap();
+        // f.write_all(wgsl.as_bytes()).unwrap();
+        // drop(f);
+
+        // output_eq!(wgsl, "tests/expected/raycast.txt");
+    }
+
+    #[test]
     #[should_panic] // Diagnostic filters not yet supported
     fn test_diagnostic_filters() {
         let mut composer = Composer::default();
