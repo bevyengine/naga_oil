@@ -6,6 +6,35 @@ use naga::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RequiredSpecialTypes {
+    pub ray_query: bool,
+    pub ray_intersection: bool,
+}
+
+impl std::ops::BitOrAssign for RequiredSpecialTypes {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.ray_query |= rhs.ray_query;
+        self.ray_intersection |= rhs.ray_intersection;
+    }
+}
+
+impl RequiredSpecialTypes {
+    pub fn generate(&self, target: &mut naga::Module) {
+        if self.ray_query {
+            target.generate_ray_desc_type();
+        }
+
+        if self.ray_intersection {
+            target.generate_ray_intersection_type();
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.ray_intersection && !self.ray_query
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DerivedModule<'a> {
     shader: Option<&'a Module>,
@@ -30,6 +59,7 @@ pub struct DerivedModule<'a> {
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
     pipeline_overrides: Arena<Override>,
+    required_special_types: RequiredSpecialTypes,
 }
 
 impl<'a> DerivedModule<'a> {
@@ -397,10 +427,14 @@ impl<'a> DerivedModule<'a> {
                             naga::RayQueryFunction::Initialize {
                                 acceleration_structure,
                                 descriptor,
-                            } => naga::RayQueryFunction::Initialize {
-                                acceleration_structure: map_expr!(acceleration_structure),
-                                descriptor: map_expr!(descriptor),
-                            },
+                            } => {
+                                // record the use of ray queries, to later add to the final module
+                                self.required_special_types.ray_query = true;
+                                naga::RayQueryFunction::Initialize {
+                                    acceleration_structure: map_expr!(acceleration_structure),
+                                    descriptor: map_expr!(descriptor),
+                                }
+                            }
                             naga::RayQueryFunction::Proceed { result } => {
                                 naga::RayQueryFunction::Proceed {
                                     result: map_expr!(result),
@@ -689,6 +723,8 @@ impl<'a> DerivedModule<'a> {
             }
             Expression::RayQueryProceedResult => expr.clone(),
             Expression::RayQueryGetIntersection { query, committed } => {
+                // record use of the intersection type
+                self.required_special_types.ray_intersection = true;
                 Expression::RayQueryGetIntersection {
                     query: map_expr!(query),
                     committed: *committed,
@@ -829,6 +865,16 @@ impl<'a> DerivedModule<'a> {
         }
 
         self.import_function(func, span)
+    }
+
+    /// get any required special types for this module
+    pub fn get_required_special_types(&self) -> RequiredSpecialTypes {
+        self.required_special_types
+    }
+
+    /// add required special types for this module
+    pub fn add_required_special_types(&mut self, types: RequiredSpecialTypes) {
+        self.required_special_types |= types;
     }
 
     pub fn into_module_with_entrypoints(mut self) -> naga::Module {
