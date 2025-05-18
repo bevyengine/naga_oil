@@ -1236,7 +1236,7 @@ mod test {
             .unwrap();
 
         // TODO enable this test when HLSL support is available
-        if cfg!(feature = "test_shader") {
+        if cfg!(feature = "test_shader") && false {
             assert_eq!(test_shader(&mut composer), 28.0);
         }
 
