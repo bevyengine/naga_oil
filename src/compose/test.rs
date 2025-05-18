@@ -1260,7 +1260,7 @@ mod test {
         // f.write_all(wgsl.as_bytes()).unwrap();
         // drop(f);
 
-        output_eq!(wgsl, "tests/expected/atomics.txt");        
+        output_eq!(wgsl, "tests/expected/atomics.txt");
     }
 
     #[test]
