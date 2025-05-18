@@ -1102,7 +1102,6 @@ impl Composer {
             [
                 source_ir.special_types.ray_desc.as_ref(),
                 source_ir.special_types.ray_intersection.as_ref(),
-                source_ir.special_types.ray_vertex_return.as_ref(),
             ]
             .iter()
             .flatten(),
