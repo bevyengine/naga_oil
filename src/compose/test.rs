@@ -1235,9 +1235,32 @@ mod test {
             })
             .unwrap();
 
-        if cfg!(feature = "test_shader") {
+        // TODO enable this test when HLSL support is available
+        if cfg!(feature = "test_shader") && false {
             assert_eq!(test_shader(&mut composer), 28.0);
         }
+
+        let module = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/atomics/top.wgsl"),
+                file_path: "tests/atomics/top.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let info = composer.create_validator().validate(&module).unwrap();
+        let wgsl = naga::back::wgsl::write_string(
+            &module,
+            &info,
+            naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+        )
+        .unwrap();
+
+        let mut f = std::fs::File::create("atomics.txt").unwrap();
+        f.write_all(wgsl.as_bytes()).unwrap();
+        drop(f);
+
+        output_eq!(wgsl, "tests/expected/atomics.txt");
     }
 
     #[test]
