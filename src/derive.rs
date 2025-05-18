@@ -6,41 +6,6 @@ use naga::{
 };
 use std::{cell::RefCell, rc::Rc};
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RequiredSpecialTypes {
-    pub ray_query: bool,
-    pub ray_intersection: bool,
-    pub ray_vertex_positions: bool,
-}
-
-impl std::ops::BitOrAssign for RequiredSpecialTypes {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.ray_query |= rhs.ray_query;
-        self.ray_intersection |= rhs.ray_intersection;
-        self.ray_vertex_positions |= rhs.ray_vertex_positions;
-    }
-}
-
-impl RequiredSpecialTypes {
-    pub fn generate(&self, target: &mut naga::Module) {
-        if self.ray_query {
-            target.generate_ray_desc_type();
-        }
-
-        if self.ray_intersection {
-            target.generate_ray_intersection_type();
-        }
-
-        if self.ray_vertex_positions {
-            target.generate_vertex_return_type();
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        !self.ray_intersection && !self.ray_query && !self.ray_vertex_positions
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct DerivedModule<'a> {
     shader: Option<&'a Module>,
@@ -65,7 +30,7 @@ pub struct DerivedModule<'a> {
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
     pipeline_overrides: Arena<Override>,
-    required_special_types: RequiredSpecialTypes,
+    special_types: naga::SpecialTypes,
 }
 
 impl<'a> DerivedModule<'a> {
@@ -74,6 +39,35 @@ impl<'a> DerivedModule<'a> {
         self.clear_shader_source();
         self.shader = Some(shader);
         self.span_offset = span_offset;
+
+        // eagerly import special types
+        if let Some(h_special_type) = shader.special_types.ray_desc.as_ref() {
+            if let Some(derived_special_type) = self.special_types.ray_desc.as_ref() {
+                self.type_map.insert(*h_special_type, *derived_special_type);
+            } else {
+                self.special_types.ray_desc = Some(self.import_type(h_special_type));
+            }
+        }
+        if let Some(h_special_type) = shader.special_types.ray_intersection.as_ref() {
+            if let Some(derived_special_type) = self.special_types.ray_intersection.as_ref() {
+                self.type_map.insert(*h_special_type, *derived_special_type);
+            } else {
+                self.special_types.ray_intersection = Some(self.import_type(h_special_type));
+            }
+        }
+        for (predeclared, h_predeclared_type) in shader.special_types.predeclared_types.iter() {
+            if let Some(derived_special_type) =
+                self.special_types.predeclared_types.get(predeclared)
+            {
+                self.type_map
+                    .insert(*h_predeclared_type, *derived_special_type);
+            } else {
+                let new_h = self.import_type(h_predeclared_type);
+                self.special_types
+                    .predeclared_types
+                    .insert(predeclared.clone(), new_h);
+            }
+        }
     }
 
     // detach source context
@@ -433,14 +427,10 @@ impl<'a> DerivedModule<'a> {
                             naga::RayQueryFunction::Initialize {
                                 acceleration_structure,
                                 descriptor,
-                            } => {
-                                // record the use of ray queries, to later add to the final module
-                                self.required_special_types.ray_query = true;
-                                naga::RayQueryFunction::Initialize {
-                                    acceleration_structure: map_expr!(acceleration_structure),
-                                    descriptor: map_expr!(descriptor),
-                                }
-                            }
+                            } => naga::RayQueryFunction::Initialize {
+                                acceleration_structure: map_expr!(acceleration_structure),
+                                descriptor: map_expr!(descriptor),
+                            },
                             naga::RayQueryFunction::Proceed { result } => {
                                 naga::RayQueryFunction::Proceed {
                                     result: map_expr!(result),
@@ -729,8 +719,6 @@ impl<'a> DerivedModule<'a> {
             }
             Expression::RayQueryProceedResult => expr.clone(),
             Expression::RayQueryGetIntersection { query, committed } => {
-                // record use of the intersection type
-                self.required_special_types.ray_intersection = true;
                 Expression::RayQueryGetIntersection {
                     query: map_expr!(query),
                     committed: *committed,
@@ -874,13 +862,10 @@ impl<'a> DerivedModule<'a> {
     }
 
     /// get any required special types for this module
-    pub fn get_required_special_types(&self) -> RequiredSpecialTypes {
-        self.required_special_types
-    }
-
-    /// add required special types for this module
-    pub fn add_required_special_types(&mut self, types: RequiredSpecialTypes) {
-        self.required_special_types |= types;
+    pub fn has_required_special_types(&self) -> bool {
+        !self.special_types.predeclared_types.is_empty()
+            || self.special_types.ray_desc.is_some()
+            || self.special_types.ray_intersection.is_some()
     }
 
     pub fn into_module_with_entrypoints(mut self) -> naga::Module {
@@ -916,7 +901,7 @@ impl From<DerivedModule<'_>> for naga::Module {
                 .unwrap()
                 .into_inner(),
             functions: derived.functions,
-            special_types: Default::default(),
+            special_types: derived.special_types,
             entry_points: Default::default(),
             overrides: derived.pipeline_overrides,
             diagnostic_filters: Default::default(),

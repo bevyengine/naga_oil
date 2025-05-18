@@ -134,7 +134,7 @@ use tracing::{debug, trace};
 
 use crate::{
     compose::preprocess::{PreprocessOutput, PreprocessorMetaData},
-    derive::{DerivedModule, RequiredSpecialTypes},
+    derive::DerivedModule,
     redirect::Redirector,
 };
 
@@ -246,8 +246,6 @@ pub struct ComposableModule {
     header_ir: naga::Module,
     // character offset of the start of the owned module string
     start_offset: usize,
-    // any required special types for this module
-    required_special_types: RequiredSpecialTypes,
 }
 
 // data used to build a ComposableModule
@@ -1097,6 +1095,7 @@ impl Composer {
         module_builder.set_shader_source(&source_ir, 0);
         header_builder.set_shader_source(&source_ir, 0);
 
+        // gather special types to exclude from owned types
         let mut special_types: HashSet<&naga::Handle<naga::Type>> = HashSet::new();
         special_types.extend(source_ir.special_types.predeclared_types.values());
         special_types.extend(
@@ -1109,11 +1108,22 @@ impl Composer {
             .flatten(),
         );
 
+        // as the header of imports that use special types includes the special type definitions explicitly,
+        // we also exclude anything with a name matching the known special type names
+        let special_type_names = special_types
+            .iter()
+            .flat_map(|h| source_ir.types.get_handle(**h).unwrap().name.clone())
+            .collect::<HashSet<_>>();
+
         let mut owned_types = HashSet::new();
         for (h, ty) in source_ir.types.iter() {
             if let Some(name) = &ty.name {
                 // we exclude any special types, these are added back later
-                if !name.contains(DECORATION_PRE) && !special_types.contains(&h) {
+                if special_types.contains(&h) || special_type_names.contains(name) {
+                    continue;
+                }
+
+                if !name.contains(DECORATION_PRE) {
                     let name = format!("{name}{module_decoration}");
                     owned_types.insert(name.clone());
                     // copy and rename types
@@ -1178,12 +1188,12 @@ impl Composer {
             }
         }
 
-        let required_special_types = module_builder.get_required_special_types();
+        let has_special_types = module_builder.has_required_special_types();
         let module_ir = module_builder.into_module_with_entrypoints();
         let mut header_ir: naga::Module = header_builder.into();
 
         // note: we cannot validate when special types are used, as writeback isn't supported
-        if self.validate && create_headers && required_special_types.is_empty() {
+        if self.validate && create_headers && !has_special_types {
             // check that identifiers haven't been renamed
             #[allow(clippy::single_element_loop)]
             for language in [
@@ -1217,7 +1227,6 @@ impl Composer {
             module_ir,
             header_ir,
             start_offset,
-            required_special_types,
         };
 
         Ok(composable_module)
@@ -1300,8 +1309,6 @@ impl Composer {
                 }
             }
         }
-
-        derived.add_required_special_types(composable.required_special_types);
 
         derived.clear_shader_source();
     }
@@ -1809,15 +1816,10 @@ impl Composer {
                 workgroup_size_overrides: ep.workgroup_size_overrides,
             });
         }
-
-        let required_special_types = derived.get_required_special_types();
-
         let mut naga_module = naga::Module {
             entry_points,
             ..derived.into()
         };
-
-        required_special_types.generate(&mut naga_module);
 
         // apply overrides
         if !composable.override_functions.is_empty() {

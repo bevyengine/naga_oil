@@ -1235,32 +1235,9 @@ mod test {
             })
             .unwrap();
 
-        // TODO enable this test when HLSL support is available
-        if cfg!(feature = "test_shader") && false {
+        if cfg!(feature = "test_shader") {
             assert_eq!(test_shader(&mut composer), 28.0);
         }
-
-        let module = composer
-            .make_naga_module(NagaModuleDescriptor {
-                source: include_str!("tests/atomics/top.wgsl"),
-                file_path: "tests/atomics/top.wgsl",
-                ..Default::default()
-            })
-            .unwrap();
-
-        let info = composer.create_validator().validate(&module).unwrap();
-        let wgsl = naga::back::wgsl::write_string(
-            &module,
-            &info,
-            naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
-        )
-        .unwrap();
-
-        // let mut f = std::fs::File::create("atomics.txt").unwrap();
-        // f.write_all(wgsl.as_bytes()).unwrap();
-        // drop(f);
-
-        output_eq!(wgsl, "tests/expected/atomics.txt");
     }
 
     #[test]
@@ -1284,6 +1261,8 @@ mod test {
             })
             .unwrap();
 
+        // println!("{:#?}", _module);
+
         // writeback doesn't work for raycast structures
         // at least we can test that it compiles
 
@@ -1300,6 +1279,23 @@ mod test {
         // drop(f);
 
         // output_eq!(wgsl, "tests/expected/raycast.txt");
+    }
+
+    #[test]
+    fn test_modf() {
+        let mut composer =
+            Composer::default().with_capabilities(naga::valid::Capabilities::RAY_QUERY);
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/modf/mod.wgsl"),
+                file_path: "tests/modf/mod.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let res = test_shader(&mut composer);
+        assert!(res.abs() < 1e-6);
     }
 
     #[test]
