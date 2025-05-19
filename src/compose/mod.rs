@@ -1257,7 +1257,7 @@ impl Composer {
         for (h, ty) in source_ir.types.iter() {
             if let Some(name) = &ty.name {
                 if composable.owned_types.contains(name)
-                    && items.map_or(true, |items| items.contains(name))
+                    && items.is_none_or(|items| items.contains(name))
                 {
                     derived.import_type(&h);
                 }
@@ -1267,7 +1267,7 @@ impl Composer {
         for (h, c) in source_ir.constants.iter() {
             if let Some(name) = &c.name {
                 if composable.owned_constants.contains(name)
-                    && items.map_or(true, |items| items.contains(name))
+                    && items.is_none_or(|items| items.contains(name))
                 {
                     derived.import_const(&h);
                 }
@@ -1277,7 +1277,7 @@ impl Composer {
         for (h, po) in source_ir.overrides.iter() {
             if let Some(name) = &po.name {
                 if composable.owned_functions.contains(name)
-                    && items.map_or(true, |items| items.contains(name))
+                    && items.is_none_or(|items| items.contains(name))
                 {
                     derived.import_pipeline_override(&h);
                 }
@@ -1287,7 +1287,7 @@ impl Composer {
         for (h, v) in source_ir.global_variables.iter() {
             if let Some(name) = &v.name {
                 if composable.owned_vars.contains(name)
-                    && items.map_or(true, |items| items.contains(name))
+                    && items.is_none_or(|items| items.contains(name))
                 {
                     derived.import_global(&h);
                 }
@@ -1297,7 +1297,7 @@ impl Composer {
         for (h_f, f) in source_ir.functions.iter() {
             if let Some(name) = &f.name {
                 if composable.owned_functions.contains(name)
-                    && (items.map_or(true, |items| items.contains(name))
+                    && (items.is_none_or(|items| items.contains(name))
                         || composable
                             .override_functions
                             .values()
