@@ -1,8 +1,3 @@
-struct _atomic_compare_exchange_resultUint4_ {
-    old_value: u32,
-    exchanged: bool,
-}
-
 var<workgroup> atomX_naga_oil_mod_XORSXG5C7NVXWI5LMMUX: atomic<u32>;
 
 fn entry_pointX_naga_oil_mod_XORSXG5C7NVXWI5LMMUX() -> f32 {

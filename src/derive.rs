@@ -30,6 +30,7 @@ pub struct DerivedModule<'a> {
     globals: Arena<GlobalVariable>,
     functions: Arena<Function>,
     pipeline_overrides: Arena<Override>,
+    special_types: naga::SpecialTypes,
 }
 
 impl<'a> DerivedModule<'a> {
@@ -38,6 +39,42 @@ impl<'a> DerivedModule<'a> {
         self.clear_shader_source();
         self.shader = Some(shader);
         self.span_offset = span_offset;
+
+        // eagerly import special types
+        if let Some(h_special_type) = shader.special_types.ray_desc.as_ref() {
+            if let Some(derived_special_type) = self.special_types.ray_desc.as_ref() {
+                self.type_map.insert(*h_special_type, *derived_special_type);
+            } else {
+                self.special_types.ray_desc = Some(self.import_type(h_special_type));
+            }
+        }
+        if let Some(h_special_type) = shader.special_types.ray_intersection.as_ref() {
+            if let Some(derived_special_type) = self.special_types.ray_intersection.as_ref() {
+                self.type_map.insert(*h_special_type, *derived_special_type);
+            } else {
+                self.special_types.ray_intersection = Some(self.import_type(h_special_type));
+            }
+        }
+        if let Some(h_special_type) = shader.special_types.ray_vertex_return.as_ref() {
+            if let Some(derived_special_type) = self.special_types.ray_vertex_return.as_ref() {
+                self.type_map.insert(*h_special_type, *derived_special_type);
+            } else {
+                self.special_types.ray_vertex_return = Some(self.import_type(h_special_type));
+            }
+        }
+        for (predeclared, h_predeclared_type) in shader.special_types.predeclared_types.iter() {
+            if let Some(derived_special_type) =
+                self.special_types.predeclared_types.get(predeclared)
+            {
+                self.type_map
+                    .insert(*h_predeclared_type, *derived_special_type);
+            } else {
+                let new_h = self.import_type(h_predeclared_type);
+                self.special_types
+                    .predeclared_types
+                    .insert(predeclared.clone(), new_h);
+            }
+        }
     }
 
     // detach source context
@@ -845,6 +882,14 @@ impl<'a> DerivedModule<'a> {
         self.import_function(func, span)
     }
 
+    /// get any required special types for this module
+    pub fn has_required_special_types(&self) -> bool {
+        !self.special_types.predeclared_types.is_empty()
+            || self.special_types.ray_desc.is_some()
+            || self.special_types.ray_intersection.is_some()
+            || self.special_types.ray_vertex_return.is_some()
+    }
+
     pub fn into_module_with_entrypoints(mut self) -> naga::Module {
         let entry_points = self
             .shader
@@ -878,7 +923,7 @@ impl From<DerivedModule<'_>> for naga::Module {
                 .unwrap()
                 .into_inner(),
             functions: derived.functions,
-            special_types: Default::default(),
+            special_types: derived.special_types,
             entry_points: Default::default(),
             overrides: derived.pipeline_overrides,
             diagnostic_filters: Default::default(),
