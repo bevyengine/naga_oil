@@ -267,7 +267,7 @@ impl Preprocessor {
 
                     loop {
                         // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
-                        final_string.extend(std::iter::repeat(" ").take(line.len()));
+                        final_string.extend(std::iter::repeat_n(" ", line.len()));
                         offset += line.len() + 1;
 
                         // PERF: Ideally we don't do multiple `match_indices` passes over `line`
@@ -351,7 +351,7 @@ impl Preprocessor {
 
                     final_string.push_str(&item_replaced_line);
                     let diff = line.len().saturating_sub(item_replaced_line.len());
-                    final_string.extend(std::iter::repeat(" ").take(diff));
+                    final_string.extend(std::iter::repeat_n(" ", diff));
                     offset += original_line.len() + 1;
                     output = true;
                 }
@@ -359,7 +359,7 @@ impl Preprocessor {
 
             if !output {
                 // output spaces for removed lines to keep spans consistent (errors report against substituted_source, which is not preprocessed)
-                final_string.extend(std::iter::repeat(" ").take(line.len()));
+                final_string.extend(std::iter::repeat_n(" ", line.len()));
                 offset += line.len() + 1;
             }
             final_string.push('\n');
