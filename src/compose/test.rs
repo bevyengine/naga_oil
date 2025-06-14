@@ -1224,6 +1224,40 @@ mod test {
     }
 
     #[test]
+    fn problematic_expressions() {
+        let mut composer = Composer::default();
+
+        composer
+            .add_composable_module(ComposableModuleDescriptor {
+                source: include_str!("tests/problematic_expressions/mod.wgsl"),
+                file_path: "tests/problematic_expressions/mod.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+        let module = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/problematic_expressions/top.wgsl"),
+                file_path: "tests/problematic_expressions/top.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let info = composer.create_validator().validate(&module).unwrap();
+        let wgsl = naga::back::wgsl::write_string(
+            &module,
+            &info,
+            naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+        )
+        .unwrap();
+
+        // let mut f = std::fs::File::create("problematic_expressions.txt").unwrap();
+        // f.write_all(wgsl.as_bytes()).unwrap();
+        // drop(f);
+
+        output_eq!(wgsl, "tests/expected/problematic_expressions.txt");
+    }
+
+    #[test]
     fn test_atomics() {
         let mut composer = Composer::default();
 
