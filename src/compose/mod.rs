@@ -665,13 +665,6 @@ impl Composer {
             start_offset,
             module_string.len()
         );
-        info!(
-            "parsing {}: {}, header len {}, total len {}",
-            name,
-            module_string,
-            start_offset,
-            module_string.len()
-        );
         let module = match language {
             ShaderLanguage::Wgsl => naga::front::wgsl::parse_str(&module_string).map_err(|e| {
                 debug!("full err'd source file: \n---\n{}\n---", module_string);
@@ -1881,7 +1874,7 @@ impl Composer {
             })?;
         }
 
-
+        // validation
         if self.validate {
             let info = self.create_validator().validate(&naga_module);
             match info {
