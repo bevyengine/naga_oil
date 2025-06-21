@@ -6,6 +6,7 @@ use regex::Regex;
 use super::{
     comment_strip_iter::CommentReplaceExt,
     parse_imports::{parse_imports, substitute_identifiers},
+    wgsl_directives::{DiagnosticDirective, EnableDirective, RequiresDirective, WgslDirectives},
     ComposerErrorInner, ImportDefWithOffset, ShaderDefValue,
 };
 
@@ -22,6 +23,9 @@ pub struct Preprocessor {
     import_regex: Regex,
     define_import_path_regex: Regex,
     define_shader_def_regex: Regex,
+    enable_regex: Regex,
+    requires_regex: Regex,
+    diagnostic_regex: Regex,
 }
 
 impl Default for Preprocessor {
@@ -42,6 +46,10 @@ impl Default for Preprocessor {
             define_import_path_regex: Regex::new(r"^\s*#\s*define_import_path\s+([^\s]+)").unwrap(),
             define_shader_def_regex: Regex::new(r"^\s*#\s*define\s+([\w|\d|_]+)\s*([-\w|\d]+)?")
                 .unwrap(),
+            enable_regex: Regex::new(r"^\s*enable\s+([^;]+)\s*;").unwrap(),
+            requires_regex: Regex::new(r"^\s*requires\s+([^;]+)\s*;").unwrap(),
+            diagnostic_regex: Regex::new(r"^\s*diagnostic\s*\(\s*([^,]+)\s*,\s*([^)]+)\s*\)\s*;")
+                .unwrap(),
         }
     }
 }
@@ -52,6 +60,8 @@ pub struct PreprocessorMetaData {
     pub imports: Vec<ImportDefWithOffset>,
     pub defines: HashMap<String, ShaderDefValue>,
     pub effective_defs: HashSet<String>,
+    pub wgsl_directives: WgslDirectives,
+    pub cleaned_source: String,
 }
 
 enum ScopeLevel {
@@ -133,6 +143,145 @@ pub struct PreprocessOutput {
 }
 
 impl Preprocessor {
+    fn parse_enable_directive(
+        &self,
+        line: &str,
+        line_idx: usize,
+    ) -> Result<Option<EnableDirective>, ComposerErrorInner> {
+        if let Some(cap) = self.enable_regex.captures(line) {
+            let extensions_str = cap.get(1).unwrap().as_str().trim();
+            let extensions: Vec<String> = extensions_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            if extensions.is_empty() {
+                return Err(ComposerErrorInner::InvalidWgslDirective {
+                    directive: line.to_string(),
+                    position: line_idx,
+                    reason: "No extensions specified".to_string(),
+                });
+            }
+
+            Ok(Some(EnableDirective {
+                extensions,
+                source_location: line_idx,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_requires_directive(
+        &self,
+        line: &str,
+        line_idx: usize,
+    ) -> Result<Option<RequiresDirective>, ComposerErrorInner> {
+        if let Some(cap) = self.requires_regex.captures(line) {
+            let extensions_str = cap.get(1).unwrap().as_str().trim();
+            let extensions: Vec<String> = extensions_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            if extensions.is_empty() {
+                return Err(ComposerErrorInner::InvalidWgslDirective {
+                    directive: line.to_string(),
+                    position: line_idx,
+                    reason: "No extensions specified".to_string(),
+                });
+            }
+
+            Ok(Some(RequiresDirective {
+                extensions,
+                source_location: line_idx,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_diagnostic_directive(
+        &self,
+        line: &str,
+        line_idx: usize,
+    ) -> Result<Option<DiagnosticDirective>, ComposerErrorInner> {
+        if let Some(cap) = self.diagnostic_regex.captures(line) {
+            let severity = cap.get(1).unwrap().as_str().trim().to_string();
+            let rule = cap.get(2).unwrap().as_str().trim().to_string();
+
+            match severity.as_str() {
+                "off" | "info" | "warn" | "error" => {}
+                _ => {
+                    return Err(ComposerErrorInner::InvalidWgslDirective {
+                        directive: line.to_string(),
+                        position: line_idx,
+                        reason: format!(
+                            "Invalid severity '{}'. Must be one of: off, info, warn, error",
+                            severity
+                        ),
+                    });
+                }
+            }
+
+            Ok(Some(DiagnosticDirective {
+                severity,
+                rule,
+                source_location: line_idx,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn extract_wgsl_directives(
+        &self,
+        source: &str,
+    ) -> Result<(String, WgslDirectives), ComposerErrorInner> {
+        let mut directives = WgslDirectives::default();
+        let mut cleaned_lines = Vec::new();
+        let mut in_directive_section = true;
+
+        for (line_idx, line) in source.lines().enumerate() {
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                cleaned_lines.push(line);
+                continue;
+            }
+
+            if in_directive_section {
+                if let Some(enable) = self.parse_enable_directive(trimmed, line_idx)? {
+                    cleaned_lines.push("");
+                    directives.enables.push(enable);
+                    continue;
+                } else if let Some(requires) = self.parse_requires_directive(trimmed, line_idx)? {
+                    cleaned_lines.push("");
+                    directives.requires.push(requires);
+                    continue;
+                } else if let Some(diagnostic) =
+                    self.parse_diagnostic_directive(trimmed, line_idx)?
+                {
+                    cleaned_lines.push("");
+                    directives.diagnostics.push(diagnostic);
+                    continue;
+                } else if !trimmed.starts_with("enable")
+                    && !trimmed.starts_with("requires")
+                    && !trimmed.starts_with("diagnostic")
+                {
+                    in_directive_section = false;
+                }
+            }
+
+            cleaned_lines.push(line);
+        }
+
+        let cleaned_source = cleaned_lines.join("\n");
+        Ok((cleaned_source, directives))
+    }
+
     fn check_scope<'a>(
         &self,
         shader_defs: &HashMap<String, ShaderDefValue>,
@@ -379,6 +528,8 @@ impl Preprocessor {
         shader_str: &str,
         allow_defines: bool,
     ) -> Result<PreprocessorMetaData, ComposerErrorInner> {
+        let (shader_str, wgsl_directives) = self.extract_wgsl_directives(shader_str)?;
+
         let mut declared_imports = IndexMap::default();
         let mut used_imports = IndexMap::default();
         let mut name = None;
@@ -477,6 +628,8 @@ impl Preprocessor {
             imports: used_imports.into_values().collect(),
             defines,
             effective_defs,
+            wgsl_directives,
+            cleaned_source: shader_str.to_string(),
         })
     }
 }
