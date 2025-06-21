@@ -9,5 +9,5 @@ struct FragmentOutput {
 fn fragment(
     @builtin(position) frag_coord: vec4<f32>,
 ) -> FragmentOutput {
-    return FragmentOutput(vec4(frag_coord, 0.0), vec4(frag_coord, 1.0));
+    return FragmentOutput(frag_coord, frag_coord);
 }

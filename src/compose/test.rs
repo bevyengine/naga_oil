@@ -1580,9 +1580,9 @@ mod test {
         )
         .unwrap();
 
-        let mut f = std::fs::File::create("wgsl_call_entrypoint.txt").unwrap();
-        f.write_all(wgsl.as_bytes()).unwrap();
-        drop(f);
+        // let mut f = std::fs::File::create("wgsl_dual_source_blending.txt").unwrap();
+        // f.write_all(wgsl.as_bytes()).unwrap();
+        // drop(f);
         output_eq!(wgsl, "tests/expected/wgsl_dual_source_blending.txt");
     }
 }
