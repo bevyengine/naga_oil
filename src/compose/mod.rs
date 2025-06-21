@@ -130,7 +130,7 @@ use indexmap::IndexMap;
 use naga::EntryPoint;
 use regex::Regex;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 use crate::{
     compose::preprocess::{PreprocessOutput, PreprocessorMetaData},
@@ -588,7 +588,7 @@ impl Composer {
 
         let mut wgsl_string = String::new();
         if let Some(wgsl_directives) = &wgsl_directives {
-            info!("adding WGSL directives for {}", name);
+            trace!("adding WGSL directives for {}", name);
             wgsl_string = wgsl_directives.to_wgsl_string();
         }
         let mut module_string = match language {

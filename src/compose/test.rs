@@ -1562,7 +1562,9 @@ mod test {
     #[test]
     fn wgsl_dual_source_blending() {
         let mut composer = Composer::default();
-        composer.capabilities.set(Capabilities::DUAL_SOURCE_BLENDING, true);
+        composer
+            .capabilities
+            .set(Capabilities::DUAL_SOURCE_BLENDING, true);
 
         let module = composer
             .make_naga_module(NagaModuleDescriptor {
