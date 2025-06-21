@@ -134,6 +134,18 @@ pub enum ComposerErrorInner {
     },
     #[error("#define statements are only allowed at the start of the top-level shaders")]
     DefineInModule(usize),
+    #[error("Invalid WGSL directive '{directive}' at line {position}: {reason}")]
+    InvalidWgslDirective {
+        directive: String,
+        position: usize,
+        reason: String,
+    },
+    #[error("Conflicting diagnostic directives for rule '{rule}': existing={existing_severity}, new={new_severity}")]
+    ConflictingDirectives {
+        rule: String,
+        existing_severity: String,
+        new_severity: String,
+    },
 }
 
 struct ErrorSources<'a> {
@@ -239,7 +251,8 @@ impl ComposerError {
             | ComposerErrorInner::OverrideNotVirtual { pos, .. }
             | ComposerErrorInner::GlslInvalidVersion(pos)
             | ComposerErrorInner::DefineInModule(pos)
-            | ComposerErrorInner::InvalidShaderDefDefinitionValue { pos, .. } => {
+            | ComposerErrorInner::InvalidShaderDefDefinitionValue { pos, .. }
+            | ComposerErrorInner::InvalidWgslDirective { position: pos, .. } => {
                 (vec![Label::primary((), *pos..*pos)], vec![])
             }
             ComposerErrorInner::WgslBackError(e) => {
@@ -251,6 +264,13 @@ impl ComposerError {
             }
             ComposerErrorInner::InconsistentShaderDefValue { def } => {
                 return format!("{path}: multiple inconsistent shader def values: '{def}'");
+            }
+            ComposerErrorInner::ConflictingDirectives {
+                rule,
+                existing_severity,
+                new_severity,
+            } => {
+                return format!("{path}: conflicting diagnostic directives for rule '{rule}': existing={existing_severity}, new={new_severity}");
             }
             ComposerErrorInner::RedirectError(..) => (
                 vec![Label::primary((), 0..0)],
