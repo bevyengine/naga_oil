@@ -5,6 +5,7 @@ mod test {
     use std::io::Write;
     use std::{borrow::Cow, collections::HashMap};
 
+    use naga::valid::Capabilities;
     use wgpu::{
         BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
         BufferDescriptor, BufferUsages, CommandEncoderDescriptor, ComputePassDescriptor,
@@ -1556,5 +1557,34 @@ mod test {
         let view: &[u8] = &output_buffer.slice(..).get_mapped_range();
 
         f32::from_le_bytes(view.try_into().unwrap())
+    }
+
+    #[test]
+    fn wgsl_dual_source_blending() {
+        let mut composer = Composer::default();
+        composer
+            .capabilities
+            .set(Capabilities::DUAL_SOURCE_BLENDING, true);
+
+        let module = composer
+            .make_naga_module(NagaModuleDescriptor {
+                source: include_str!("tests/dual_source_blending/blending.wgsl"),
+                file_path: "tests/dual_source_blending/blending.wgsl",
+                ..Default::default()
+            })
+            .unwrap();
+
+        let info = composer.create_validator().validate(&module).unwrap();
+        let wgsl = naga::back::wgsl::write_string(
+            &module,
+            &info,
+            naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+        )
+        .unwrap();
+
+        // let mut f = std::fs::File::create("wgsl_dual_source_blending.txt").unwrap();
+        // f.write_all(wgsl.as_bytes()).unwrap();
+        // drop(f);
+        output_eq!(wgsl, "tests/expected/wgsl_dual_source_blending.txt");
     }
 }

@@ -140,6 +140,9 @@ use crate::{
 
 pub use self::error::{ComposerError, ComposerErrorInner, ErrSource};
 use self::preprocess::Preprocessor;
+pub use self::wgsl_directives::{
+    DiagnosticDirective, EnableDirective, RequiresDirective, WgslDirectives,
+};
 
 pub mod comment_strip_iter;
 pub mod error;
@@ -147,6 +150,7 @@ pub mod parse_imports;
 pub mod preprocess;
 mod test;
 pub mod tokenizer;
+pub mod wgsl_directives;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug, Default)]
 pub enum ShaderLanguage {
@@ -270,8 +274,6 @@ pub struct ComposableModuleDefinition {
     modules: HashMap<ModuleKey, ComposableModule>,
     // used in spans when this module is included
     module_index: usize,
-    // preprocessor meta data
-    // metadata: PreprocessorMetaData,
 }
 
 impl ComposableModuleDefinition {
@@ -580,11 +582,17 @@ impl Composer {
         language: ShaderLanguage,
         imports: &[ImportDefinition],
         shader_defs: &HashMap<String, ShaderDefValue>,
+        wgsl_directives: Option<WgslDirectives>,
     ) -> Result<IrBuildResult, ComposerError> {
         debug!("creating IR for {} with defs: {:?}", name, shader_defs);
 
+        let mut wgsl_string = String::new();
+        if let Some(wgsl_directives) = &wgsl_directives {
+            trace!("adding WGSL directives for {}", name);
+            wgsl_string = wgsl_directives.to_wgsl_string();
+        }
         let mut module_string = match language {
-            ShaderLanguage::Wgsl => String::new(),
+            ShaderLanguage::Wgsl => wgsl_string,
             #[cfg(feature = "glsl")]
             ShaderLanguage::Glsl => String::from("#version 450\n"),
         };
@@ -842,6 +850,7 @@ impl Composer {
         demote_entrypoints: bool,
         source: &str,
         imports: Vec<ImportDefWithOffset>,
+        wgsl_directives: Option<WgslDirectives>,
     ) -> Result<ComposableModule, ComposerError> {
         let mut imports: Vec<_> = imports
             .into_iter()
@@ -975,6 +984,7 @@ impl Composer {
             module_definition.language,
             &imports,
             shader_defs,
+            wgsl_directives,
         )?;
 
         // from here on errors need to be reported using the modified source with start_offset
@@ -1376,6 +1386,7 @@ impl Composer {
             true,
             &preprocessed_source,
             imports,
+            None,
         )
         .map_err(|err| err.into())
     }
@@ -1519,6 +1530,7 @@ impl Composer {
             name: module_name,
             mut imports,
             mut effective_defs,
+            cleaned_source,
             ..
         } = self
             .preprocessor
@@ -1595,7 +1607,7 @@ impl Composer {
 
         let module_set = ComposableModuleDefinition {
             name: module_name.clone(),
-            sanitized_source: substituted_source,
+            sanitized_source: cleaned_source,
             file_path: file_path.to_owned(),
             language,
             effective_defs: effective_defs.into_iter().collect(),
@@ -1650,7 +1662,13 @@ impl Composer {
 
         let sanitized_source = self.sanitize_and_set_auto_bindings(source);
 
-        let PreprocessorMetaData { name, defines, .. } = self
+        let PreprocessorMetaData {
+            name,
+            defines,
+            wgsl_directives,
+            cleaned_source,
+            ..
+        } = self
             .preprocessor
             .get_preprocessor_metadata(&sanitized_source, true)
             .map_err(|inner| ComposerError {
@@ -1667,7 +1685,7 @@ impl Composer {
 
         let PreprocessOutput { imports, .. } = self
             .preprocessor
-            .preprocess(&sanitized_source, &shader_defs)
+            .preprocess(&cleaned_source, &shader_defs)
             .map_err(|inner| ComposerError {
                 inner,
                 source: ErrSource::Constructing {
@@ -1734,7 +1752,7 @@ impl Composer {
 
         let definition = ComposableModuleDefinition {
             name,
-            sanitized_source: sanitized_source.clone(),
+            sanitized_source: cleaned_source.clone(),
             language: shader_type.into(),
             file_path: file_path.to_owned(),
             module_index: 0,
@@ -1751,7 +1769,7 @@ impl Composer {
             imports,
         } = self
             .preprocessor
-            .preprocess(&sanitized_source, &shader_defs)
+            .preprocess(&cleaned_source, &shader_defs)
             .map_err(|inner| ComposerError {
                 inner,
                 source: ErrSource::Constructing {
@@ -1770,6 +1788,7 @@ impl Composer {
                 false,
                 &preprocessed_source,
                 imports,
+                Some(wgsl_directives),
             )
             .map_err(|e| ComposerError {
                 inner: e.inner,

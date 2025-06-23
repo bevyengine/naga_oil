@@ -134,6 +134,12 @@ pub enum ComposerErrorInner {
     },
     #[error("#define statements are only allowed at the start of the top-level shaders")]
     DefineInModule(usize),
+    #[error("Invalid WGSL directive '{directive}' at line {position}: {reason}")]
+    InvalidWgslDirective {
+        directive: String,
+        position: usize,
+        reason: String,
+    },
 }
 
 struct ErrorSources<'a> {
@@ -239,7 +245,8 @@ impl ComposerError {
             | ComposerErrorInner::OverrideNotVirtual { pos, .. }
             | ComposerErrorInner::GlslInvalidVersion(pos)
             | ComposerErrorInner::DefineInModule(pos)
-            | ComposerErrorInner::InvalidShaderDefDefinitionValue { pos, .. } => {
+            | ComposerErrorInner::InvalidShaderDefDefinitionValue { pos, .. }
+            | ComposerErrorInner::InvalidWgslDirective { position: pos, .. } => {
                 (vec![Label::primary((), *pos..*pos)], vec![])
             }
             ComposerErrorInner::WgslBackError(e) => {
