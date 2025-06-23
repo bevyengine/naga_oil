@@ -140,12 +140,6 @@ pub enum ComposerErrorInner {
         position: usize,
         reason: String,
     },
-    #[error("Conflicting diagnostic directives for rule '{rule}': existing={existing_severity}, new={new_severity}")]
-    ConflictingDirectives {
-        rule: String,
-        existing_severity: String,
-        new_severity: String,
-    },
 }
 
 struct ErrorSources<'a> {
@@ -264,13 +258,6 @@ impl ComposerError {
             }
             ComposerErrorInner::InconsistentShaderDefValue { def } => {
                 return format!("{path}: multiple inconsistent shader def values: '{def}'");
-            }
-            ComposerErrorInner::ConflictingDirectives {
-                rule,
-                existing_severity,
-                new_severity,
-            } => {
-                return format!("{path}: conflicting diagnostic directives for rule '{rule}': existing={existing_severity}, new={new_severity}");
             }
             ComposerErrorInner::RedirectError(..) => (
                 vec![Label::primary((), 0..0)],
