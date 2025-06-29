@@ -1,0 +1,18 @@
+@group(0) @binding(0) 
+var imageX_naga_oil_mod_XNVXWIX: texture_2d<f32>;
+@group(0) @binding(1) 
+var sX_naga_oil_mod_XNVXWIX: sampler;
+
+fn fX_naga_oil_mod_XNVXWIX() -> f32 {
+    let _e4: vec4<f32> = textureSample(imageX_naga_oil_mod_XNVXWIX, sX_naga_oil_mod_XNVXWIX, vec2(0f));
+    let x: f32 = _e4.x;
+    let _e13: vec4<f32> = textureSample(imageX_naga_oil_mod_XNVXWIX, sX_naga_oil_mod_XNVXWIX, vec2(0f), vec2<i32>(1i, 1i));
+    let y: f32 = _e13.x;
+    return (x * y);
+}
+
+fn main() -> f32 {
+    let _e0: f32 = fX_naga_oil_mod_XNVXWIX();
+    return _e0;
+}
+
