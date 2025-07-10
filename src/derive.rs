@@ -466,10 +466,12 @@ impl<'a> DerivedModule<'a> {
                         match mode {
                             GatherMode::BroadcastFirst => (),
                             GatherMode::Broadcast(ref mut h_src)
+                            | GatherMode::QuadBroadcast(ref mut h_src)
                             | GatherMode::Shuffle(ref mut h_src)
                             | GatherMode::ShuffleDown(ref mut h_src)
                             | GatherMode::ShuffleUp(ref mut h_src)
                             | GatherMode::ShuffleXor(ref mut h_src) => *h_src = map_expr!(h_src),
+                            GatherMode::QuadSwap(_) => (),
                         };
                         Statement::SubgroupGather {
                             mode,
@@ -515,7 +517,8 @@ impl<'a> DerivedModule<'a> {
                     Statement::Break
                     | Statement::Continue
                     | Statement::Kill
-                    | Statement::Barrier(_) => stmt.clone(),
+                    | Statement::MemoryBarrier(_)
+                    | Statement::ControlBarrier(_) => stmt.clone(),
                 }
             })
             .collect();
@@ -603,6 +606,7 @@ impl<'a> DerivedModule<'a> {
                 offset,
                 level,
                 depth_ref,
+                clamp_to_edge,
             } => Expression::ImageSample {
                 image: map_expr!(image),
                 sampler: map_expr!(sampler),
@@ -620,6 +624,7 @@ impl<'a> DerivedModule<'a> {
                     },
                 },
                 depth_ref: map_expr_opt!(depth_ref),
+                clamp_to_edge: *clamp_to_edge,
             },
             Expression::Access { base, index } => Expression::Access {
                 base: map_expr!(base),
@@ -928,6 +933,7 @@ impl From<DerivedModule<'_>> for naga::Module {
             overrides: derived.pipeline_overrides,
             diagnostic_filters: Default::default(),
             diagnostic_filter_leaf: None,
+            doc_comments: None,
         }
     }
 }

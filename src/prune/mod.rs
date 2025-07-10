@@ -1712,12 +1712,14 @@ impl<'a> Pruner<'a> {
                     match mode {
                         naga::GatherMode::BroadcastFirst => (),
                         naga::GatherMode::Broadcast(h_src)
+                        | naga::GatherMode::QuadBroadcast(h_src)
                         | naga::GatherMode::Shuffle(h_src)
                         | naga::GatherMode::ShuffleDown(h_src)
                         | naga::GatherMode::ShuffleUp(h_src)
                         | naga::GatherMode::ShuffleXor(h_src) => {
                             self.add_expression(function, func_req, context, *h_src, &PartReq::All)
                         }
+                        naga::GatherMode::QuadSwap(_) => (),
                     }
                     self.add_expression(function, func_req, context, *argument, &PartReq::All);
                 }
