@@ -48,7 +48,7 @@ pub fn parse_imports<'a>(
                     tracing::warn!("item list imports are deprecated, please use `rust::style::item_imports` (or use feature `allow_deprecated`)`\n| {}", input);
 
                     is_deprecated_itemlist = true;
-                    stack.push(format!("{}::", current));
+                    stack.push(format!("{current}::"));
                     current = String::default();
                     as_name = None;
                 }
