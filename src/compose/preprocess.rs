@@ -219,8 +219,7 @@ impl Preprocessor {
                         directive: line.to_string(),
                         position: line_idx,
                         reason: format!(
-                            "Invalid severity '{}'. Must be one of: off, info, warn, error",
-                            severity
+                            "Invalid severity '{severity}'. Must be one of: off, info, warn, error"
                         ),
                     });
                 }
@@ -1190,7 +1189,7 @@ defined
             defines: shader_defs,
             ..
         } = processor.get_preprocessor_metadata(WGSL, true).unwrap();
-        println!("defines: {:?}", shader_defs);
+        println!("defines: {shader_defs:?}");
         let result = processor.preprocess(WGSL, &shader_defs).unwrap();
         assert_eq!(result.preprocessed_source, EXPECTED);
     }
@@ -1233,7 +1232,7 @@ bool: false
             defines: shader_defs,
             ..
         } = processor.get_preprocessor_metadata(WGSL, true).unwrap();
-        println!("defines: {:?}", shader_defs);
+        println!("defines: {shader_defs:?}");
         let result = processor.preprocess(WGSL, &shader_defs).unwrap();
         assert_eq!(result.preprocessed_source, EXPECTED);
     }
