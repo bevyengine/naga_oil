@@ -130,7 +130,7 @@ use indexmap::IndexMap;
 use naga::EntryPoint;
 use regex::Regex;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::{
     compose::preprocess::{PreprocessOutput, PreprocessorMetaData},
@@ -1499,6 +1499,7 @@ impl Composer {
 
     /// add a composable module to the composer.
     /// all modules imported by this module must already have been added
+    /// will replace existing module if one already exists, invalidating all modules that depend on it
     pub fn add_composable_module(
         &mut self,
         desc: ComposableModuleDescriptor,
@@ -1617,6 +1618,10 @@ impl Composer {
             module_index,
             modules: Default::default(),
         };
+
+        if self.contains_module(&module_name) {
+            warn!("A module named `{module_name}` is already present and will be replaced, invalidating all its dependents.");
+        }
 
         // invalidate dependent modules if this module already exists
         self.remove_composable_module(&module_name);
