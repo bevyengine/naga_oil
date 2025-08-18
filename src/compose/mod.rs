@@ -130,6 +130,7 @@ use indexmap::IndexMap;
 use naga::EntryPoint;
 use regex::Regex;
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
+use std::sync::LazyLock;
 use tracing::{debug, trace};
 
 use crate::{
@@ -348,8 +349,8 @@ impl Default for Composer {
             check_decoration_regex: Regex::new(
                 format!(
                     "({}|{})",
-                    regex_syntax::escape(DECORATION_PRE),
-                    regex_syntax::escape(DECORATION_OVERRIDE_PRE)
+                    regex::escape(DECORATION_PRE),
+                    regex::escape(DECORATION_OVERRIDE_PRE)
                 )
                 .as_str(),
             )
@@ -357,8 +358,8 @@ impl Default for Composer {
             undecorate_regex: Regex::new(
                 format!(
                     r"(\x1B\[\d+\w)?([\w\d_]+){}([A-Z0-9]*){}",
-                    regex_syntax::escape(DECORATION_PRE),
-                    regex_syntax::escape(DECORATION_POST)
+                    regex::escape(DECORATION_PRE),
+                    regex::escape(DECORATION_POST)
                 )
                 .as_str(),
             )
@@ -370,8 +371,8 @@ impl Default for Composer {
             override_fn_regex: Regex::new(
                 format!(
                     r"(override\s+fn\s+)([^\s]+){}([\w\d]+){}(\s*)\(",
-                    regex_syntax::escape(DECORATION_PRE),
-                    regex_syntax::escape(DECORATION_POST)
+                    regex::escape(DECORATION_PRE),
+                    regex::escape(DECORATION_POST)
                 )
                 .as_str(),
             )
@@ -379,8 +380,8 @@ impl Default for Composer {
             undecorate_override_regex: Regex::new(
                 format!(
                     "{}([A-Z0-9]*){}",
-                    regex_syntax::escape(DECORATION_OVERRIDE_PRE),
-                    regex_syntax::escape(DECORATION_POST)
+                    regex::escape(DECORATION_OVERRIDE_PRE),
+                    regex::escape(DECORATION_POST)
                 )
                 .as_str(),
             )
@@ -1927,8 +1928,7 @@ impl Composer {
     }
 }
 
-static PREPROCESSOR: once_cell::sync::Lazy<Preprocessor> =
-    once_cell::sync::Lazy::new(Preprocessor::default);
+static PREPROCESSOR: LazyLock<Preprocessor> = LazyLock::new(Preprocessor::default);
 
 /// Get module name and all required imports (ignoring shader_defs) from a shader string
 pub fn get_preprocessor_data(
