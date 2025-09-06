@@ -21,14 +21,11 @@ allow_deprecated = []
 naga = { version = "26", features = ["wgsl-in", "wgsl-out", "termcolor"] }
 tracing = "0.1"
 regex = "1.8"
-regex-syntax = "0.8"
 thiserror = "2.0"
 codespan-reporting = "0.12"
 data-encoding = "2.3.2"
-bit-set = "0.8"
 rustc-hash = "1.1"
 unicode-ident = "1"
-once_cell = "1.17.0"
 indexmap = "2"
 
 [dev-dependencies]

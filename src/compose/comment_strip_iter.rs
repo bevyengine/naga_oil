@@ -1,16 +1,14 @@
 use std::{borrow::Cow, str::Lines};
 
 use regex::Regex;
+use std::sync::LazyLock;
 
 // outside of blocks and quotes, change state on //, /* or "
-static RE_NONE: once_cell::sync::Lazy<Regex> =
-    once_cell::sync::Lazy::new(|| Regex::new(r#"(//|/\*|\")"#).unwrap());
+static RE_NONE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(//|/\*|\")"#).unwrap());
 // in blocks, change on /* and */
-static RE_BLOCK: once_cell::sync::Lazy<Regex> =
-    once_cell::sync::Lazy::new(|| Regex::new(r"(/\*|\*/)").unwrap());
+static RE_BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(/\*|\*/)").unwrap());
 // in quotes, change only on "
-static RE_QUOTE: once_cell::sync::Lazy<Regex> =
-    once_cell::sync::Lazy::new(|| Regex::new(r#"\""#).unwrap());
+static RE_QUOTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\""#).unwrap());
 
 #[derive(PartialEq, Eq)]
 enum CommentState {
