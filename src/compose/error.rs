@@ -306,9 +306,6 @@ fn supports_color() -> bool {
 // termcolor doesn't expose this logic when using custom buffers
 #[cfg(not(any(test, target_arch = "wasm32")))]
 fn supports_color() -> bool {
-    match std::env::var_os("TERM") {
-        None if cfg!(unix) => false,
-        Some(term) if term == "dumb" => false,
-        _ => std::env::var_os("NO_COLOR").is_none(),
-    }
+    // TODO: https://github.com/tokio-rs/tracing/issues/3378
+    false
 }
