@@ -1291,9 +1291,9 @@ mod test {
         )
         .unwrap();
 
-        let mut f = std::fs::File::create("atomics.txt").unwrap();
-        f.write_all(wgsl.as_bytes()).unwrap();
-        drop(f);
+        // let mut f = std::fs::File::create("atomics.txt").unwrap();
+        // f.write_all(wgsl.as_bytes()).unwrap();
+        // drop(f);
 
         output_eq!(wgsl, "tests/expected/atomics.txt");
     }
