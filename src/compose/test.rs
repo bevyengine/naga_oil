@@ -1568,7 +1568,14 @@ mod test {
 
         queue.submit([buffer]);
 
-        while !device.poll(wgpu::PollType::Wait).unwrap().is_queue_empty() {
+        while !device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap()
+            .is_queue_empty()
+        {
             println!("waiting...");
         }
 
@@ -1576,7 +1583,14 @@ mod test {
             .slice(..)
             .map_async(wgpu::MapMode::Read, |_| ());
 
-        while !device.poll(wgpu::PollType::Wait).unwrap().is_queue_empty() {
+        while !device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap()
+            .is_queue_empty()
+        {
             println!("waiting...");
         }
 
