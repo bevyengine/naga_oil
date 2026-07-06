@@ -5,6 +5,22 @@ use super::{
     Composer, ImportDefWithOffset, ImportDefinition,
 };
 
+enum ImportPathIter<'a> {
+    Multiple(std::slice::Iter<'a, String>),
+    Single(std::iter::Once<&'a str>),
+}
+
+impl<'a> Iterator for ImportPathIter<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ImportPathIter::Multiple(iter) => iter.next().map(String::as_str),
+            ImportPathIter::Single(iter) => iter.next(),
+        }
+    }
+}
+
 pub fn parse_imports<'a>(
     input: &'a str,
     declared_imports: &mut IndexMap<String, Vec<String>>,
@@ -129,20 +145,23 @@ pub fn substitute_identifiers(
             Token::Identifier(ident, token_pos) => {
                 if in_substitution_position {
                     let (first, residual) = ident.split_once("::").unwrap_or((ident, ""));
-                    let full_paths = declared_imports
-                        .get(first)
-                        .cloned()
-                        .unwrap_or(vec![first.to_owned()]);
+                    let full_paths = match declared_imports.get(first) {
+                        Some(paths) => {
+                            if !allow_ambiguous && paths.len() > 1 {
+                                return Err(offset + token_pos);
+                            }
 
-                    if !allow_ambiguous && full_paths.len() > 1 {
-                        return Err(offset + token_pos);
-                    }
-
-                    for mut full_path in full_paths {
-                        if !residual.is_empty() {
-                            full_path.push_str("::");
-                            full_path.push_str(residual);
+                            ImportPathIter::Multiple(paths.iter())
                         }
+                        None => ImportPathIter::Single(std::iter::once(first)),
+                    };
+
+                    for path in full_paths {
+                        let full_path = if !residual.is_empty() {
+                            &format!("{}::{}", path, residual)
+                        } else {
+                            path
+                        };
 
                         if let Some((module, item)) = full_path.rsplit_once("::") {
                             used_imports
@@ -159,7 +178,7 @@ pub fn substitute_identifiers(
                                 .push(item.to_owned());
                             output.push_str(item);
                             output.push_str(&Composer::decorate(module));
-                        } else if full_path.find('"').is_some() {
+                        } else if full_path.contains('"') {
                             // we don't want to replace local variables that shadow quoted module imports with the
                             // quoted name as that won't compile.
                             // since quoted items always refer to modules, we can just emit the original ident
@@ -169,7 +188,7 @@ pub fn substitute_identifiers(
                             // if there are no quotes we do the replacement. this means that individually imported
                             // items can be used, and any shadowing local variables get harmlessly renamed.
                             // TODO: it can lead to weird errors, but such is life
-                            output.push_str(&full_path);
+                            output.push_str(full_path);
                         }
                     }
                 } else {
