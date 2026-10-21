@@ -22,7 +22,7 @@ naga = { version = "30", features = ["wgsl-in", "wgsl-out", "termcolor"] }
 tracing = "0.1"
 regex = "1.8"
 thiserror = "2.0"
-codespan-reporting = "0.12"
+codespan-reporting = "0.13.1"
 data-encoding = "2.3.2"
 rustc-hash = "1.1"
 unicode-ident = "1"
