@@ -1,3 +1,6 @@
+> [!WARNING]
+> Naga Oil has been archived and is now unmaintained. The Bevy project has migrated to [WESL](https://wesl-lang.dev/)
+
 Naga Organised Integration Library (`naga-oil`) is a crate for combining and manipulating shaders.
 
 - `compose` presents a modular shader composition framework
