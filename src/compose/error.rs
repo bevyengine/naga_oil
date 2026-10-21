@@ -292,7 +292,7 @@ impl ComposerError {
             &mut no_color_writer
         };
 
-        term::emit(writer, &config, &files, &diagnostic).expect("cannot write error");
+        term::emit_to_io_write(writer, &config, &files, &diagnostic).expect("cannot write error");
 
         String::from_utf8_lossy(&msg).into_owned()
     }
